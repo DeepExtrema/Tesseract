@@ -34,9 +34,16 @@ REDIRECT_MAX_DEPTH = 5
 
 # Mentions are path-qualified: - [[Projects/Sentinel ESG|Sentinel ESG]] — evidence
 # group 1 = full vault-relative path (no .md); group 2 = evidence (optional)
-MENTION_LINE = re.compile(r"^- \[\[([^\]|]+)\|[^\]]+\]\](?:\s+[—-]\s+(.*))?$")
+# Note names may contain "]" ("Acme - [2027] Software Engineer"), so the
+# target runs to the last "|" and the alias is matched lazily up to the "]]"
+# that leaves a well-formed rest of line. Excluding "]" would drop those
+# mentions silently and read as "no connections" downstream.
+MENTION_LINE = re.compile(r"^- \[\[([^|]+)\|.+?\]\](?:\s+[—-]\s+(.*))?$")
 # Relations are path-qualified the same way: - operates_in [[Claude/Graph/.../X|X]]
 # group 1 = relation name; group 2 = full vault-relative path of target (no .md)
+# Relation targets are always entity notes, whose filenames pass through
+# notes.safe_filename and so never contain "]" — unlike mention targets above,
+# which are human note paths and keep whatever the author typed.
 RELATION_LINE = re.compile(r"^- (\w+) \[\[([^\]|]+)\|[^\]]+\]\]$")
 
 

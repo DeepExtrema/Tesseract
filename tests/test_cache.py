@@ -146,3 +146,48 @@ def test_related_notes_rejects_negative_limit(hub, vault):
     # a negative slice would silently return all-but-N instead of a cap
     with pytest.raises(ValueError, match="limit"):
         cache.related_notes(hub, vault, "Claude/Inbox/seed.md", limit=-1)
+
+
+def _write_outside_claude(vault, rel: str, text: str) -> None:
+    """Human notes live outside Claude/, which Vault.write guards."""
+    path = vault.root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+BRACKETED = "Applications/Initech - [2027] Software Engineer.md"
+TRAILING_BRACKET = "Applications/Globex - [role not specified].md"
+
+
+@pytest.mark.parametrize("note_path", [BRACKETED, TRAILING_BRACKET])
+def test_mention_of_note_whose_name_contains_brackets(vault, tmp_path, note_path):
+    # A "]" in the note name used to end the mention target early, so the row
+    # was never written and related_notes reported "no connections".
+    store = GraphStore(vault)
+    store.apply("Projects/Sentinel ESG.md", Extraction([ACME, CHAIN], [REL]))
+    _write_outside_claude(vault, note_path, "Applied via [[Acme Corp]].\n")
+    store.apply(note_path, Extraction([ACME], []))
+    db = tmp_path / "graph.db"
+    cache.rebuild(vault, db)
+
+    assert cache.note_entity_paths(db, note_path) == [
+        "Claude/Graph/Organizations/Acme Corp"
+    ]
+    related = cache.related_notes(db, vault, note_path, hops=1)
+    assert "Projects/Sentinel ESG.md" in [r["path"] for r in related]
+    assert cache.find_entity(db, "acme")[0]["mention_count"] == 2
+
+
+def test_bracketed_mention_keeps_its_evidence(vault, tmp_path):
+    store = GraphStore(vault)
+    _write_outside_claude(vault, BRACKETED, "Applied.\n")
+    store.apply(BRACKETED, Extraction([dict(ACME, summary="A company.")], []))
+    entity = "Claude/Graph/Organizations/Acme Corp.md"
+    store.remove_mention(entity, BRACKETED)
+    store.add_mention(entity, BRACKETED, "Recruiter contact for the 2027 req.")
+    db = tmp_path / "graph.db"
+    cache.rebuild(vault, db)
+    con = sqlite3.connect(db)
+    rows = con.execute("SELECT note_path, evidence FROM mentions").fetchall()
+    con.close()
+    assert rows == [(BRACKETED[:-3], "Recruiter contact for the 2027 req.")]

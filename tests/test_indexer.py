@@ -38,6 +38,17 @@ def test_scan_skips_graph_ignored_and_hidden(vault):
     assert not any(p.startswith("copilot/") for p in scanned)
 
 
+def test_scan_skips_unknown_dot_directories(vault):
+    """A stray dot-directory of vault backups was scanned because it was not
+    one of three allow-listed names."""
+    backup = vault.root / ".backup-2026-07"
+    backup.mkdir()
+    (backup / "Sentinel ESG.md").write_text("x", encoding="utf-8")
+    scanned = indexer.scan_notes(vault)
+    assert "Daily.md" in scanned
+    assert not any(p.startswith(".backup-2026-07/") for p in scanned)
+
+
 def test_scan_excludes_caretaker_log_notes(vault):
     """Move/report logs are appended outside sweeps too (undo_move, the
     organize_vault tool); scanning them would feed log lines to the paid

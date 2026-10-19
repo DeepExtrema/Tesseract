@@ -2,6 +2,7 @@ from tesseract_mcp.search import (
     as_str_list,
     body_text,
     iter_candidate_notes,
+    is_skipped,
     iter_note_files,
 )
 
@@ -72,3 +73,39 @@ def test_body_text_without_frontmatter_is_passthrough():
 
 def test_body_text_unclosed_frontmatter_is_passthrough():
     assert body_text("---\ntags: [x]\nno closing fence\n") == "---\ntags: [x]\nno closing fence\n"
+
+
+def test_skips_every_dot_directory_not_only_known_names(vault, vault_dir):
+    # A three-name allow-list let a stray backup folder reach the index; the
+    # rule is the whole dot-entry class now.
+    backup = vault_dir / ".notes-backup-2026"
+    backup.mkdir()
+    (backup / "Sentinel ESG.md").write_text(
+        "---\ntags: [project, esg]\n---\n\nESG incident ingestion pipeline copy.\n",
+        encoding="utf-8",
+    )
+    assert _paths(iter_candidate_notes(vault, tags=["esg"])) == [
+        "Projects/Sentinel ESG.md"
+    ]
+    assert not any(rel.startswith(".") for _p, rel in iter_note_files(vault))
+
+
+def test_skips_nested_dot_directory(vault, vault_dir):
+    nested = vault_dir / "Projects" / ".archive"
+    nested.mkdir()
+    (nested / "Old.md").write_text("ingestion pipeline archived\n", encoding="utf-8")
+    assert "Projects/.archive/Old.md" not in _paths(iter_candidate_notes(vault))
+    assert "Projects/.archive/Old.md" not in [
+        rel for _p, rel in iter_note_files(vault)
+    ]
+
+
+def test_is_skipped_rule():
+    assert is_skipped((".obsidian", "app.json"))
+    assert is_skipped(("Claude", ".trash", "Note.md"))
+    assert is_skipped((".smart-env", "x", "y.md"))
+    assert is_skipped((".hidden note.md",))
+    assert not is_skipped(("Projects", "Sentinel ESG.md"))
+    assert not is_skipped(("_Attachments", "img.png"))
+    assert not is_skipped(("00 - Maps of Content", "Home.md"))
+    assert not is_skipped(())

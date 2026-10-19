@@ -19,7 +19,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import yaml
 
 from .notes import agent_name
-from .search import SKIP_DIRS, parse_frontmatter
+from .search import is_skipped, parse_frontmatter
 from .vault import NoteExists, Vault, _retry_locked
 
 SCHEMA_FILE = "_schema.md"
@@ -112,7 +112,7 @@ def _scan_schema_folders(vault: Vault) -> tuple[dict[str, str], list[dict]]:
     bad: list[dict] = []
     for path in sorted(vault.root.rglob(SCHEMA_FILE)):
         rel_parts = path.relative_to(vault.root).parts
-        if SKIP_DIRS & set(rel_parts):
+        if is_skipped(rel_parts):
             continue
         folder = "/".join(rel_parts[:-1])
         if vault.in_claude(folder):

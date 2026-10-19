@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -10,7 +11,20 @@ import yaml
 
 from .vault import Vault
 
-SKIP_DIRS = {".obsidian", ".trash", ".git"}
+# Named only for documentation and tests; the rule below is the whole class,
+# not this list.
+KNOWN_SKIP_DIRS = {".obsidian", ".trash", ".git", ".smart-env"}
+
+
+def is_skipped(rel_parts: Sequence[str]) -> bool:
+    """True for a vault-relative path under, or named as, a dot-entry.
+
+    Dot-entries in a vault are tool state or stashed copies, never content.
+    An allow-list of three known names let anything else that writes a
+    dot-directory leak into search, embeddings, tasks, the graph and the mover
+    at once, so the whole class is hidden instead of named cases.
+    """
+    return any(part.startswith(".") for part in rel_parts)
 
 
 @dataclass
@@ -56,11 +70,11 @@ def iter_note_files(
     vault: Vault, folder: str | None = None
 ) -> Iterator[tuple[Path, str]]:
     """(absolute path, vault-relative path) for every .md note under
-    `folder` (default: the whole vault), skipping SKIP_DIRS."""
+    `folder` (default: the whole vault), skipping dot-entries (is_skipped)."""
     base = vault.resolve(folder) if folder else vault.root
     for path in sorted(base.rglob("*.md")):
         rel_parts = path.relative_to(vault.root).parts
-        if SKIP_DIRS & set(rel_parts):
+        if is_skipped(rel_parts):
             continue
         yield path, "/".join(rel_parts)
 

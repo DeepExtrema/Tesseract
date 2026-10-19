@@ -115,8 +115,41 @@ def test_excerpt_line_match_never_returns_frontmatter_line():
     assert _excerpt(text, "Notes/N.md", "billing") == "Invoice for the billing cycle."
 
 
-def test_excerpt_frontmatter_only_note_returns_empty():
-    assert _excerpt("---\ntags: [x]\n---\n", "Notes/N.md", "zzz") == ""
+# Notes imported from a database tool keep every field in frontmatter and have
+# an empty body. BM25 and the embeddings rank the whole file, so these are
+# ranked hits with nothing in the body to preview.
+FRONTMATTER_ONLY_NOTE = (
+    "---\nCategory: Space\nEntity Type: Customer\n"
+    "Notes: Smallsat constellation operator with 200+ satellites.\n---\n"
+)
+
+
+def test_excerpt_frontmatter_field_match_when_body_is_empty():
+    assert _excerpt(FRONTMATTER_ONLY_NOTE, "Companies/Planet Labs.md", "satellites") == (
+        "Notes: Smallsat constellation operator with 200+ satellites."
+    )
+
+
+def test_excerpt_frontmatter_only_note_falls_back_to_first_field():
+    assert _excerpt(FRONTMATTER_ONLY_NOTE, "Companies/Planet Labs.md", "zzz") == (
+        "Category: Space"
+    )
+
+
+def test_excerpt_body_match_beats_frontmatter_match():
+    text = "---\nCategory: billing\n---\n\nInvoice for the billing cycle.\n"
+    assert _excerpt(text, "Notes/N.md", "billing") == "Invoice for the billing cycle."
+
+
+def test_excerpt_empty_note_returns_empty():
+    assert _excerpt("", "Notes/N.md", "zzz") == ""
+    assert _excerpt("---\n---\n", "Notes/N.md", "zzz") == ""
+
+
+def test_excerpt_caps_long_frontmatter_field():
+    text = "---\nNotes: " + "satellite " * 60 + "\n---\n"
+    got = _excerpt(text, "Companies/X.md", "satellite")
+    assert got.startswith("Notes: satellite") and len(got) == 200
 
 
 def test_excerpt_title_match_unchanged():
@@ -140,3 +173,19 @@ def test_substring_fallback_still_works_when_bm25_empty(vault):
     # matches, so the substring fallback must still return results.
     hits = hybrid_search(vault, vault.root, FakeEmbedder(), "e", tags=["esg"])
     assert [h.path for h in hits] == ["Projects/Sentinel ESG.md"]
+
+
+def test_folder_scoped_hit_on_a_frontmatter_only_note_has_an_excerpt(vault, vault_dir):
+    # Reported as "folder-scoped search returns empty excerpts": the folders
+    # that were scoped into happen to hold imported, body-less notes.
+    (vault_dir / "Companies").mkdir()
+    (vault_dir / "Companies" / "Planet Labs.md").write_text(
+        FRONTMATTER_ONLY_NOTE, encoding="utf-8"
+    )
+    hits = hybrid_search(
+        vault, vault.root, FakeEmbedder(), "satellites", folder="Companies"
+    )
+    by_path = {h.path: h.excerpt for h in hits}
+    assert by_path["Companies/Planet Labs.md"] == (
+        "Notes: Smallsat constellation operator with 200+ satellites."
+    )

@@ -75,9 +75,10 @@ which runs three independent ranking passes over the same candidate set and
 fuses them:
 
 - **Candidate set.** `search.iter_candidate_notes` walks the vault, applies
-  the optional tag/folder filters, and skips `.obsidian`, `.trash`, and
-  `.git` (`search.SKIP_DIRS`). Every ranking pass below only ever sees this
-  filtered set.
+  the optional tag/folder filters, and skips every dot-entry — `.obsidian`,
+  `.trash`, `.git` and anything else hidden (`search.is_skipped`, shared with
+  the indexer, embeddings, tasks, sheets, the graph and the mover). Every
+  ranking pass below only ever sees this filtered set.
 - **BM25 ranking.** `bm25.rank` tokenizes with a simple `[a-z0-9]+` regex
   and scores the candidates with `rank_bm25`'s `BM25L` variant (chosen over
   the more common `BM25Okapi` because Okapi's IDF term collapses to zero

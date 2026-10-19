@@ -36,6 +36,14 @@ def _vector_rank(
     return [p for p, s in scored if s > 0][:limit]
 
 
+def _frontmatter_lines(text: str, body: str) -> list[str]:
+    """Frontmatter field lines, in order, without the --- fences."""
+    if body == text:
+        return []
+    front = text[: len(text) - len(body)]
+    return [ln.strip() for ln in front.splitlines() if ln.strip().strip("-")]
+
+
 def _excerpt(text: str, rel: str, query: str) -> str:
     stem = rel.rsplit("/", 1)[-1][:-3]
     q = query.lower()
@@ -45,12 +53,21 @@ def _excerpt(text: str, rel: str, query: str) -> str:
     for line in body.splitlines():
         if q in line.lower():
             return line.strip()
+    # BM25 and the embeddings rank the whole file, frontmatter included, so a
+    # note can be a hit on a field alone. Notes imported from a database tool
+    # keep all their content in frontmatter and have an empty body; previewing
+    # only the body returned "" for those, leaving no way to triage a hit
+    # without a read_note per result. Fields can be long, so cap them.
+    front_lines = _frontmatter_lines(text, body)
+    for line in front_lines:
+        if q in line.lower():
+            return line[:200]
     # Semantic-only hit: no literal match anywhere. First body line beats
     # the old behavior of returning the raw file's first line ("---").
     for line in body.splitlines():
         if line.strip():
             return line.strip()[:120]
-    return ""
+    return front_lines[0][:120] if front_lines else ""
 
 
 def _substring_rank(corpus: dict[str, str], query: str, limit: int) -> list[str]:
