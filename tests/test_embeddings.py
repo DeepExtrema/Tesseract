@@ -148,3 +148,18 @@ def test_persist_false_embeds_without_writing_cache(vault, tmp_path):
     state.mkdir()
     got = get_note_vectors(vault, state, FakeEmbedder(), persist=False)
     assert got and not (state / FALLBACK_CACHE_FILE).exists()
+
+
+def test_retired_notes_are_never_embedded(vault, vault_dir):
+    # Retirement rewrites the tombstone, which would invalidate its cache
+    # entry and re-embed the whole retired set for vectors fusion discards.
+    graph = vault_dir / "Claude" / "Graph" / "Topics"
+    graph.mkdir(parents=True)
+    (graph / "Logistics.md").write_text(
+        "---\nentity: topic\nretired: 2026-10-19 21:00\n---\n\n# Logistics\n",
+        encoding="utf-8",
+    )
+    embedder = FakeEmbedder()
+    vectors = get_note_vectors(vault, vault_dir, embedder)
+    assert "Claude/Graph/Topics/Logistics.md" not in vectors
+    assert "Claude/Graph/Topics/Logistics.md" not in stale_notes(vault, vault_dir)

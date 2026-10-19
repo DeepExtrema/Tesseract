@@ -189,3 +189,22 @@ def test_folder_scoped_hit_on_a_frontmatter_only_note_has_an_excerpt(vault, vaul
     assert by_path["Companies/Planet Labs.md"] == (
         "Notes: Smallsat constellation operator with 200+ satellites."
     )
+
+
+def test_hybrid_search_excludes_a_retired_tombstone(vault, vault_dir):
+    # A tombstone is short, so BM25 would rank it above the note it was
+    # derived from. It must not be a candidate at all.
+    graph = vault_dir / "Claude" / "Graph" / "Topics"
+    graph.mkdir(parents=True)
+    (graph / "Logistics.md").write_text(
+        "---\nentity: topic\nretired: 2026-10-19 21:00\n---\n\n"
+        "# Logistics\n\nRetired: orphaned — no mentions or relations.\n",
+        encoding="utf-8",
+    )
+    (vault_dir / "Freight.md").write_text(
+        "# Freight\n\nLogistics planning for inbound freight.\n", encoding="utf-8"
+    )
+    paths = [h.path for h in hybrid_search(
+        vault, vault.root, FakeEmbedder(), "logistics")]
+    assert "Claude/Graph/Topics/Logistics.md" not in paths
+    assert "Freight.md" in paths

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import sc_adapter
-from .search import iter_note_files
+from .search import is_superseded, iter_note_files
 from .vault import Vault
 
 FALLBACK_CACHE_FILE = "fallback_embeddings.json"
@@ -108,10 +108,15 @@ def _partition(
     to skip re-reading every note."""
     sc_vectors = sc_adapter.load_note_vectors(vault)
     if note_texts is None:
-        note_texts = {
-            rel: path.read_text(encoding="utf-8", errors="ignore")
-            for path, rel in iter_note_files(vault)
-        }
+        note_texts = {}
+        for path, rel in iter_note_files(vault):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            # Superseded notes are not search candidates, so hybrid_search
+            # drops their vectors during fusion anyway. Embedding them is pure
+            # cost, and retirement rewrites every tombstone's text, which would
+            # invalidate the fallback cache entry and re-embed the retired set.
+            if not is_superseded(text):
+                note_texts[rel] = text
     fallback_cache = load_vector_cache(_fallback_path(state_root))
     vectors: dict[str, list[float]] = {}
     stale: list[str] = []

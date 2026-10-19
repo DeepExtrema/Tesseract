@@ -5,7 +5,7 @@ from datetime import datetime
 from tesseract_mcp import cache, cleanup, consolidate, indexer
 from tesseract_mcp.extractor import Extraction
 from tesseract_mcp.graphstore import GraphStore, resolve_redirect
-from tesseract_mcp.search import parse_frontmatter
+from tesseract_mcp.search import iter_candidate_notes, parse_frontmatter
 
 NOW = datetime(2026, 7, 13, 12, 0, 0)
 
@@ -341,3 +341,32 @@ def test_dry_repair_counts_without_writing(vault, vault_dir):
     assert cleanup.flatten_stubs(vault, NOW, dry=True) == {
         "flattened": 1, "retired_stubs": 0}
     assert {p: p.read_bytes() for p in graph.rglob("*.md")} == before
+
+
+def _candidates(vault):
+    return [rel for rel, _text in iter_candidate_notes(vault)]
+
+
+def test_retirement_removes_an_entity_from_search_but_keeps_it_revivable(vault):
+    # The point of retiring rather than deleting: the entity leaves the search
+    # corpus, and its aliases survive on disk so extraction can revive it.
+    store = GraphStore(vault)
+    store.upsert_entity({"name": "Goddard Space Flight Center",
+                         "type": "organization", "aliases": ["GSFC"],
+                         "summary": "NASA centre in Greenbelt."})
+    rel = "Claude/Graph/Organizations/Goddard Space Flight Center.md"
+    assert rel in _candidates(vault)
+
+    assert cleanup.apply_retirements(vault, now=NOW)["retired"] == [rel[:-3]]
+
+    assert rel not in _candidates(vault)
+    # alias still on disk, and the indexer still routes "GSFC" to this note
+    assert parse_frontmatter(vault.read(rel))["aliases"] == ["GSFC"]
+    assert store.find_entity_note("organization", "GSFC") == rel
+
+    revived, created = store.upsert_entity_ex(
+        {"name": "Goddard Space Flight Center", "type": "organization",
+         "aliases": [], "summary": "Back."})
+    assert (revived, created) == (rel, True)
+    assert "retired" not in parse_frontmatter(vault.read(rel))
+    assert rel in _candidates(vault)

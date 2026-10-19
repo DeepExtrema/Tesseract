@@ -3,6 +3,7 @@ from tesseract_mcp.search import (
     body_text,
     iter_candidate_notes,
     is_skipped,
+    is_superseded,
     iter_note_files,
 )
 
@@ -109,3 +110,41 @@ def test_is_skipped_rule():
     assert not is_skipped(("_Attachments", "img.png"))
     assert not is_skipped(("00 - Maps of Content", "Home.md"))
     assert not is_skipped(())
+
+
+def test_retired_entity_tombstone_is_out_of_search(vault, vault_dir):
+    # Retiring an orphaned entity only moves it out of search if the reader
+    # honours the tombstone; otherwise the short tombstone outranks its source.
+    graph = vault_dir / "Claude" / "Graph" / "Topics"
+    graph.mkdir(parents=True)
+    (graph / "CouchDB.md").write_text(
+        "---\nentity: topic\naliases: [Couch]\nretired: 2026-10-19 21:00\n---\n\n"
+        "# CouchDB\n\nDocument database used for LiveSync.\n\n"
+        "Retired: orphaned — no mentions or relations.\n",
+        encoding="utf-8",
+    )
+    rels = _paths(iter_candidate_notes(vault))
+    assert "Claude/Graph/Topics/CouchDB.md" not in rels
+    assert "Claude/Concepts/CouchDB.md" in rels
+
+
+def test_merge_stub_is_out_of_search(vault, vault_dir):
+    graph = vault_dir / "Claude" / "Graph" / "Topics"
+    graph.mkdir(parents=True)
+    (graph / "Couch DB.md").write_text(
+        "---\nentity: topic\nmerged_into: Claude/Graph/Topics/CouchDB\n---\n\n"
+        "# Couch DB\n\nMerged into [[CouchDB]].\n",
+        encoding="utf-8",
+    )
+    assert "Claude/Graph/Topics/Couch DB.md" not in _paths(
+        iter_candidate_notes(vault)
+    )
+
+
+def test_is_superseded_rule():
+    assert is_superseded("---\nretired: 2026-10-19 21:00\n---\n\n# X\n")
+    assert is_superseded("---\nmerged_into: Claude/Graph/Topics/Y\n---\n\n# X\n")
+    assert not is_superseded("---\nentity: topic\naliases: [GSFC]\n---\n\n# X\n")
+    assert not is_superseded("# X\n\nNo frontmatter.\n")
+    # an empty value is not a retirement — only a recorded date retires a note
+    assert not is_superseded("---\nretired:\n---\n\n# X\n")
