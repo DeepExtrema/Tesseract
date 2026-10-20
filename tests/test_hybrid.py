@@ -1,6 +1,13 @@
 import pytest
 
-from tesseract_mcp.hybrid import _excerpt, hybrid_search, rrf_fuse
+from tesseract_mcp.hybrid import (
+    _excerpt,
+    hybrid_search,
+    is_derived,
+    is_named_by,
+    rrf_fuse,
+    source_first,
+)
 
 
 class FakeEmbedder:
@@ -208,3 +215,107 @@ def test_hybrid_search_excludes_a_retired_tombstone(vault, vault_dir):
         vault, vault.root, FakeEmbedder(), "logistics")]
     assert "Claude/Graph/Topics/Logistics.md" not in paths
     assert "Freight.md" in paths
+
+
+def _graph_vault(vault_dir):
+    """A vault where derived entity notes outnumber the one source note and
+    would otherwise win on BM25: they are shorter and name the term twice."""
+    graph = vault_dir / "Claude" / "Graph" / "Organizations"
+    graph.mkdir(parents=True)
+    for n in range(5):
+        (graph / f"Logistics Co {n}.md").write_text(
+            f"---\nentity: organization\naliases: [LC{n}]\n---\n\n"
+            f"# Logistics Co {n}\n\nA logistics company.\n",
+            encoding="utf-8",
+        )
+    (vault_dir / "Freight Review.md").write_text(
+        "# Freight Review\n\nNotes on our logistics spend this quarter, "
+        "covering carriers, lanes and warehouse logistics.\n",
+        encoding="utf-8",
+    )
+    return vault_dir
+
+
+def test_source_notes_rank_above_derived_entity_notes_by_default(vault, vault_dir):
+    # On a mature vault most notes are derived entity notes, so they take most of
+    # the unscoped top-10 slots and crowd out the sources that answer the query.
+    _graph_vault(vault_dir)
+    paths = [h.path for h in hybrid_search(
+        vault, vault.root, FakeEmbedder(), "logistics", limit=6)]
+    assert paths[0] == "Freight Review.md"
+    assert all(p.startswith("Claude/Graph/") for p in paths[1:])
+
+
+def test_prefer_source_false_restores_the_mixed_ranking(vault, vault_dir):
+    _graph_vault(vault_dir)
+    paths = [h.path for h in hybrid_search(
+        vault, vault.root, FakeEmbedder(), "logistics", limit=6,
+        prefer_source=False)]
+    assert "Freight Review.md" in paths
+    assert paths[0].startswith("Claude/Graph/")
+
+
+def test_a_query_that_is_an_entity_name_keeps_the_entity_note_on_top(vault, vault_dir):
+    # Demoting every derived note cost entity-by-name lookup outright. A
+    # query that *is* the name is asking for the definition.
+    _graph_vault(vault_dir)
+    paths = [h.path for h in hybrid_search(
+        vault, vault.root, FakeEmbedder(), "Logistics Co 3", limit=6)]
+    assert paths[0] == "Claude/Graph/Organizations/Logistics Co 3.md"
+
+
+def test_an_entity_alias_also_exempts_the_note_from_demotion(vault, vault_dir):
+    _graph_vault(vault_dir)
+    paths = [h.path for h in hybrid_search(
+        vault, vault.root, FakeEmbedder(), "LC3", limit=6)]
+    assert paths[0] == "Claude/Graph/Organizations/Logistics Co 3.md"
+
+
+def test_a_question_about_an_entity_still_prefers_the_source_notes(vault, vault_dir):
+    # Equality, not containment: the name appears inside the query, but the
+    # notes that answer a question about it are the sources.
+    _graph_vault(vault_dir)
+    paths = [h.path for h in hybrid_search(
+        vault, vault.root, FakeEmbedder(),
+        "what do we spend on logistics each quarter", limit=6)]
+    assert paths[0] == "Freight Review.md"
+
+
+def test_graph_scoped_search_ranking_is_untouched(vault, vault_dir):
+    # Folder scoping into the graph is a deliberate ask for entity notes.
+    # A homogeneous candidate set must come back in relevance order.
+    _graph_vault(vault_dir)
+    args = (vault, vault.root, FakeEmbedder(), "logistics")
+    scoped = [h.path for h in hybrid_search(
+        *args, folder="Claude/Graph", limit=6)]
+    mixed = [h.path for h in hybrid_search(
+        *args, folder="Claude/Graph", limit=6, prefer_source=False)]
+    assert scoped == mixed
+    assert len(scoped) == 5
+
+
+def test_source_first_preserves_relevance_order_within_each_group():
+    corpus = {
+        "A.md": "", "Claude/Graph/Topics/T.md": "", "B.md": "",
+        "Claude/Graph/Topics/U.md": "",
+    }
+    ranked = ["Claude/Graph/Topics/T.md", "A.md", "Claude/Graph/Topics/U.md", "B.md"]
+    assert source_first(ranked, corpus, "logistics") == [
+        "A.md", "B.md", "Claude/Graph/Topics/T.md", "Claude/Graph/Topics/U.md",
+    ]
+
+
+def test_is_named_by_ignores_punctuation_the_filename_sanitizer_strips():
+    # notes.safe_filename removes : from an entity name, so the note on disk
+    # never matches the name the caller types character for character.
+    note = "---\nentity: project\n---\n\n# Project X: Phase 2\n"
+    assert is_named_by(note, "Claude/Graph/Projects/Project X Phase 2.md",
+                       "Project X: Phase 2")
+    assert not is_named_by(note, "Claude/Graph/Projects/Project X Phase 2.md",
+                           "Project X Phase 3")
+
+
+def test_is_derived_does_not_match_a_sibling_of_the_graph_folder():
+    assert not is_derived("Claude/Graphics/Chart.md")
+    assert not is_derived("Claude/Sessions/2026-10-19 Work.md")
+    assert is_derived("Claude/Graph/People/Alice Zhang.md")

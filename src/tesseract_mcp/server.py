@@ -107,14 +107,21 @@ def search_brain(
     tags: list[str] | None = None,
     folder: str | None = None,
     limit: int = 20,
+    prefer_source: bool = True,
 ) -> list[dict]:
     """Hybrid full-text + semantic search across the whole vault (BM25 +
     vector similarity, fused). Optionally filter by frontmatter tags or
-    restrict to a subfolder. Returns path + excerpt, ranked by relevance."""
+    restrict to a subfolder. Returns path + excerpt, ranked by relevance.
+
+    Source notes rank above derived Claude/Graph entity notes by default:
+    entity notes can outnumber sources and otherwise take most of
+    the top slots. An entity note still leads when the query is its exact
+    name or alias. Pass prefer_source=false to rank both kinds together."""
     vault = get_vault()
     hits = hybrid.hybrid_search(
         vault, indexer.state_dir(vault.root), _get_embedder(),
         query, tags=tags, folder=folder, limit=limit,
+        prefer_source=prefer_source,
     )
     return [{"path": h.path, "excerpt": h.excerpt} for h in hits]
 

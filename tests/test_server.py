@@ -75,16 +75,22 @@ def test_search_brain_uses_hybrid_engine(monkeypatch):
 
     called = {}
 
-    def fake_hybrid_search(vault, state_root, embedder, query, tags=None, folder=None, limit=20):
+    def fake_hybrid_search(vault, state_root, embedder, query, tags=None,
+                           folder=None, limit=20, prefer_source=True):
         called["query"] = query
         called["limit"] = limit
+        called["prefer_source"] = prefer_source
         return [Hit("Fake.md", "fake excerpt")]
 
     monkeypatch.setattr(hybrid_mod, "hybrid_search", fake_hybrid_search)
     result = server.search_brain("anything", limit=5)
     assert called["query"] == "anything"
     assert called["limit"] == 5
+    assert called["prefer_source"] is True
     assert result == [{"path": "Fake.md", "excerpt": "fake excerpt"}]
+
+    assert server.search_brain("anything", prefer_source=False)
+    assert called["prefer_source"] is False
 
 
 def test_read_note():

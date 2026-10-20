@@ -82,11 +82,16 @@ fuses them:
 - **BM25 ranking.** `bm25.rank` tokenizes with a simple `[a-z0-9]+` regex
   and scores the candidates with `rank_bm25`'s `BM25L` variant (chosen over
   the more common `BM25Okapi` because Okapi's IDF term collapses to zero
-  scores on the small corpora typical of a personal vault). The top 50
+  scores on the small corpora typical of a personal vault). The top
   positively-scored notes become the BM25-ranked list.
 - **Vector ranking.** Every candidate's embedding is compared to the query
-  embedding by cosine similarity; the top 50 with positive similarity form
-  the vector-ranked list.
+  embedding by cosine similarity; the top candidates with positive similarity
+  form the vector-ranked list.
+- **Lane depth.** Each lane contributes `LANE_DEPTH` (50) candidates, or
+  `SOURCE_FIRST_LANE_DEPTH` (300) when source-first ranking is on. The deeper
+  lane is not a tuning preference: on a mature vault most notes are derived
+  entity notes, so at a depth of 50 a query can fuse to 50 derived notes and
+  no source note at all, leaving the reordering below nothing to promote.
 - **Fusion.** The two ranked lists are merged with Reciprocal Rank Fusion
   (`hybrid.rrf_fuse`, `k=60`). RRF combines lists by rank position rather
   than raw score, so BM25 scores and cosine similarities — two numbers on
@@ -101,6 +106,22 @@ fuses them:
   list would just pollute the fusion."* Substring matching is a fallback
   signal for degenerate queries, not a fourth ranking strategy competing
   with BM25 and vectors on equal footing.
+- **Source-first reordering (`prefer_source`, default on).** The fused list
+  is stable-partitioned into source notes, then derived `Claude/Graph` entity
+  notes (`hybrid.source_first`). On a mature vault entity notes outnumber the
+  notes they were extracted from, so in one undifferentiated ranking they take most
+  of the unscoped top-10 slots and crowd out the sources that actually answer
+  the query.
+  Three properties keep this from costing recall: order is preserved inside
+  each group, a homogeneous list is returned untouched (so a search scoped to
+  `Claude/Graph` ranks exactly as before), and an entity note whose own name
+  or alias *is* the query is exempt from demotion (`hybrid.is_named_by`).
+  That last exemption is load-bearing — without it, searching "Alice Zhang"
+  stopped returning her entity note at all, because every source note that
+  merely mentions her outranked her definition. The comparison is token
+  equality, not containment: "who is Alice Zhang" is a question about her,
+  and the notes that answer it are the sources. `prefer_source=false` gives
+  back the old mixed ranking, unchanged.
 - **Vector source.** Vectors come from Obsidian's Smart Connections plugin
   (`sc_adapter.py`) when its cached embedding for a note is fresh — i.e.
   computed after the note's last edit. When Smart Connections' embedding is
