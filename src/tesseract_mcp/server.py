@@ -357,7 +357,7 @@ def onboard() -> dict:
         "add_task(content, due?) / list_tasks(include_done?, folder?)",
         "get_backlinks(path) / list_recent(n)",
         "index_brain(force?) — extract entities into the semantic graph",
-        "find_entity(query, type?) / related_notes(path, hops?) / graph_stats()",
+        "find_entity(query, type?, limit?) / related_notes(path, hops?) / graph_stats()",
         "context_bundle(query, hops?, limit?) — one call: hybrid hits + entities + related notes",
         "recall_bundle(mode, project?, since?) — digest/resume raw material for the recall skills",
         "consolidate_graph(apply?) — merge duplicate entities (dry-run default)",
@@ -406,10 +406,12 @@ def index_brain(force: bool = False) -> dict:
 
 
 @mcp.tool()
-def find_entity(query: str, type: str | None = None) -> list[dict]:
+def find_entity(query: str, type: str | None = None, limit: int = 20) -> list[dict]:
     """Look up graph entities by name or alias (case-insensitive substring).
-    Optional type filter: person, organization, domain, topic, project, source."""
-    return cache_mod.find_entity(_graph_db(), query, type=type)
+    Optional type filter: person, organization, domain, topic, project, source.
+    Best matches first (exact, then prefix, then substring; then most
+    mentions), at most `limit` results."""
+    return cache_mod.find_entity(_graph_db(), query, type=type, limit=limit)
 
 
 @mcp.tool()

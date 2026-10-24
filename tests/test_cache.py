@@ -44,6 +44,22 @@ def test_find_entity_type_filter(populated):
     assert cache.find_entity(populated, "supply", type="person") == []
 
 
+def test_find_entity_limit_ranks_before_cut(vault, tmp_path):
+    store = GraphStore(vault)
+    ents = [
+        {"name": n, "type": "topic", "aliases": [], "summary": ""}
+        for n in ("Blazed", "Zedcorp", "Zed")
+    ]
+    store.apply("Src/a.md", Extraction(ents, []))
+    db = tmp_path / "graph.db"
+    cache.rebuild(vault, db)
+    names = [r["name"] for r in cache.find_entity(db, "zed")]
+    assert names == ["Zed", "Zedcorp", "Blazed"]
+    assert [r["name"] for r in cache.find_entity(db, "zed", limit=1)] == ["Zed"]
+    assert cache.find_entity(db, "zed", limit=0) == []
+    assert cache.find_entity(db, "zed", limit=-3) == []
+
+
 def test_related_notes_shared_entity(populated, vault):
     got = cache.related_notes(populated, vault, "Claude/Inbox/interview.md", hops=1)
     paths = [r["path"] for r in got]
