@@ -8,8 +8,9 @@ unrelated space and would silently corrupt similarity ranking if mixed in.
 The fallback store is one binary file, ``note_vectors.npz``, in the state
 folder: note paths, content hashes and a float64 matrix. Loading is memoised by
 file stamp, so another process's save is picked up and an unchanged store is
-never re-read. A ``fallback_embeddings.json`` left by an older version is
-imported once and left in place.
+never re-read. A ``fallback_embeddings.json`` left by an older version is read
+when the binary file is absent, converted by the next call that may write, and
+left in place.
 """
 
 from __future__ import annotations
@@ -110,6 +111,7 @@ class VectorStore:
         self._lock = threading.Lock()
         self._stamp: tuple | None = None
         self._racy = False
+        self._legacy_stamp: tuple | None = None
         self.generation = 0
         self.rows: dict[str, tuple[str, np.ndarray]] = {}
 
@@ -117,21 +119,28 @@ class VectorStore:
     def _path(self) -> Path:
         return self._root / STORE_FILE
 
-    def refresh(self) -> "VectorStore":
+    def refresh(self, *, persist: bool = True) -> "VectorStore":
+        """Bring the rows up to date with the files. With ``persist`` False
+        nothing is written: an old JSON store is read and its conversion is
+        left to the next call that may write."""
         with self._lock:
-            self._refresh()
+            self._refresh(persist)
             return self
 
-    def _refresh(self) -> None:
+    def _refresh(self, persist: bool) -> None:
         try:
             st = self._path.stat()
         except FileNotFoundError:
-            legacy = self._root / LEGACY_JSON_FILE
-            if legacy.exists():
-                self._import_legacy(legacy)
-            elif self._stamp is not None:
-                self._stamp, self.rows = None, {}
-                self.generation += 1
+            try:
+                legacy_st = (self._root / LEGACY_JSON_FILE).stat()
+            except FileNotFoundError:
+                if self._stamp is not None or self._legacy_stamp is not None:
+                    self._stamp, self._legacy_stamp, self.rows = None, None, {}
+                    self.generation += 1
+                return
+            self._read_legacy(legacy_st)
+            if persist:
+                self._write()
             return
         if self._stamp == file_stamp(st) and not self._racy:
             return
@@ -148,18 +157,21 @@ class VectorStore:
         self._stamp, self._racy = file_stamp(st), is_racy(st, read_ns)
         self.generation += 1
 
-    def _import_legacy(self, legacy: Path) -> None:
-        cache = json.loads(legacy.read_text(encoding="utf-8"))
+    def _read_legacy(self, st: os.stat_result) -> None:
+        if self._legacy_stamp == file_stamp(st):
+            return
+        cache = json.loads((self._root / LEGACY_JSON_FILE).read_text(encoding="utf-8"))
         self.rows = {
             rel: (entry["hash"], np.asarray(entry["vec"], dtype=np.float64))
             for rel, entry in cache.items()
         }
-        self._write()
+        self._legacy_stamp = file_stamp(st)
+        self.generation += 1
 
     def save(self, entries: dict[str, tuple[str, np.ndarray]], existing: set[str]) -> None:
         """Add ``entries`` and drop every note that is no longer in the vault."""
         with self._lock:
-            self._refresh()
+            self._refresh(persist=False)
             self.rows.update(entries)
             self.rows = {rel: row for rel, row in self.rows.items() if rel in existing}
             self._write()
@@ -288,7 +300,7 @@ def resolve_vectors(
     source = _source_for(vault, state_root)
     with source.lock:
         env = sc_adapter.smart_env(vault)
-        store = _store_for(state_root).refresh()
+        store = _store_for(state_root).refresh(persist=embedder is not None and persist)
         key = (snap.generation, env.generation, store.generation)
         current = source.current
         if current is None or current.key != key:

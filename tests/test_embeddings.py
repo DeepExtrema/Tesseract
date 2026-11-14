@@ -253,6 +253,23 @@ def test_old_json_cache_is_imported_and_left_in_place(vault, vault_dir, tmp_path
     assert get_note_vectors(vault, state, FakeEmbedder())["Daily.md"] == [7.0, 8.0]
 
 
+def test_stale_notes_reads_an_old_json_cache_without_writing(vault, vault_dir, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    text = (vault_dir / "Daily.md").read_text(encoding="utf-8")
+    (state / "fallback_embeddings.json").write_text(
+        json.dumps({
+            "Daily.md": {
+                "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "vec": [7.0, 8.0],
+            }
+        }),
+        encoding="utf-8",
+    )
+    assert "Daily.md" not in stale_notes(vault, state)
+    assert [p.name for p in state.iterdir()] == ["fallback_embeddings.json"]
+
+
 def test_vector_of_a_deleted_note_is_not_kept(vault, vault_dir, tmp_path):
     state = tmp_path / "state"
     state.mkdir()
