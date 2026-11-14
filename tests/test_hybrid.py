@@ -8,6 +8,7 @@ from tesseract_mcp.hybrid import (
     rrf_fuse,
     source_first,
 )
+from tesseract_mcp.search import parse_frontmatter
 
 
 class FakeEmbedder:
@@ -295,12 +296,8 @@ def test_graph_scoped_search_ranking_is_untouched(vault, vault_dir):
 
 
 def test_source_first_preserves_relevance_order_within_each_group():
-    corpus = {
-        "A.md": "", "Claude/Graph/Topics/T.md": "", "B.md": "",
-        "Claude/Graph/Topics/U.md": "",
-    }
     ranked = ["Claude/Graph/Topics/T.md", "A.md", "Claude/Graph/Topics/U.md", "B.md"]
-    assert source_first(ranked, corpus, "logistics") == [
+    assert source_first(ranked, lambda rel: {}, "logistics") == [
         "A.md", "B.md", "Claude/Graph/Topics/T.md", "Claude/Graph/Topics/U.md",
     ]
 
@@ -308,7 +305,7 @@ def test_source_first_preserves_relevance_order_within_each_group():
 def test_is_named_by_ignores_punctuation_the_filename_sanitizer_strips():
     # notes.safe_filename removes : from an entity name, so the note on disk
     # never matches the name the caller types character for character.
-    note = "---\nentity: project\n---\n\n# Project X: Phase 2\n"
+    note = parse_frontmatter("---\nentity: project\n---\n\n# Project X: Phase 2\n")
     assert is_named_by(note, "Claude/Graph/Projects/Project X Phase 2.md",
                        "Project X: Phase 2")
     assert not is_named_by(note, "Claude/Graph/Projects/Project X Phase 2.md",

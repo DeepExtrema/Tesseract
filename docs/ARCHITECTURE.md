@@ -127,7 +127,7 @@ fuses them:
   computed after the note's last edit. When Smart Connections' embedding is
   stale or absent, `embeddings.py` falls back to a local
   `sentence-transformers` model, `TaylorAI/bge-micro-v2`, and caches the
-  result (keyed by content hash) in `fallback_embeddings.json` next to the
+  result (keyed by content hash) in `note_vectors.npz` next to the
   rest of this vault's state. That fallback model is not an arbitrary
   choice: it's pinned to be *identical* to what Smart Connections uses,
   because embedding vectors from two different models live in unrelated

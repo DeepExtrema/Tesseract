@@ -1,4 +1,17 @@
-from tesseract_mcp.bm25 import rank, tokenize
+from collections import Counter
+
+import numpy as np
+
+from tesseract_mcp import bm25
+from tesseract_mcp.bm25 import tokenize
+
+
+def rank(corpus, query, limit=50):
+    paths = list(corpus)
+    tokens = [tokenize(corpus[p]) for p in paths]
+    totals = np.array([len(t) for t in tokens], dtype=np.float64)
+    ranked = bm25.rank([Counter(t) for t in tokens], totals, query, limit)
+    return [(paths[i], score) for i, score in ranked]
 
 
 def test_tokenize_lowercases_and_splits():

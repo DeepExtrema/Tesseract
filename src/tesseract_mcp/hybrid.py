@@ -6,12 +6,16 @@ each other.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
+
 from . import bm25 as bm25_mod
-from .embeddings import Embedder, cosine, get_note_vectors
+from . import corpus, embeddings
+from .embeddings import Embedder
 from .graphstore import GRAPH_ROOT
-from .search import Hit, body_text, iter_candidate_notes, parse_frontmatter
+from .search import Hit, body_text
 from .vault import Vault
 
 RRF_K = 60
@@ -35,10 +39,10 @@ def is_derived(rel: str) -> bool:
     return rel.startswith(GRAPH_ROOT + "/")
 
 
-def is_named_by(text: str, rel: str, query: str) -> bool:
+def is_named_by(meta: dict, rel: str, query: str) -> bool:
     """True when the query is exactly this note's own name or one of its
-    aliases, compared on BM25 tokens rather than raw text. Every character
-    notes.safe_filename strips from an entity name (``/:*?"<>|[]#^``) is a
+    aliases (read from its parsed frontmatter ``meta``), compared on BM25
+    tokens rather than raw text. Every character notes.safe_filename strips from an entity name (``/:*?"<>|[]#^``) is a
     character the tokenizer drops too, so "Project X: Phase 2" still matches
     the "Project X Phase 2.md" it was written to.
 
@@ -50,19 +54,21 @@ def is_named_by(text: str, rel: str, query: str) -> bool:
     and the notes that answer it are the sources.
     """
     q = bm25_mod.tokenize(query)
-    if not q:
-        return False
+    return bool(q) and _is_named_by(q, meta, rel)
+
+
+def _is_named_by(q: list[str], meta: dict, rel: str) -> bool:
     stem = rel.rsplit("/", 1)[-1][:-3]
     if bm25_mod.tokenize(stem) == q:
         return True
-    aliases = parse_frontmatter(text).get("aliases") or []
+    aliases = meta.get("aliases") or []
     if not isinstance(aliases, list):
         aliases = [aliases]
     return any(bm25_mod.tokenize(str(a)) == q for a in aliases)
 
 
 def source_first(
-    ranked: list[str], corpus: dict[str, str], query: str
+    ranked: list[str], meta_of: Callable[[str], dict], query: str
 ) -> list[str]:
     """Stable partition of a ranked list: source notes, then derived ones.
 
@@ -71,13 +77,17 @@ def source_first(
     entity notes match, ranks exactly as before. A derived note the query
     names outright keeps its place among the sources.
     """
-    def demote(rel: str) -> bool:
-        return is_derived(rel) and not is_named_by(corpus[rel], rel, query)
-
-    kept = [rel for rel in ranked if not demote(rel)]
-    if len(kept) == len(ranked):
+    q = bm25_mod.tokenize(query)
+    demoted = {
+        rel
+        for rel in ranked
+        if is_derived(rel) and not (q and _is_named_by(q, meta_of(rel), rel))
+    }
+    if not demoted:
         return ranked
-    return kept + [rel for rel in ranked if demote(rel)]
+    return [rel for rel in ranked if rel not in demoted] + [
+        rel for rel in ranked if rel in demoted
+    ]
 
 
 def rrf_fuse(ranked_lists: list[list[str]], k: int = RRF_K) -> list[str]:
@@ -89,15 +99,23 @@ def rrf_fuse(ranked_lists: list[list[str]], k: int = RRF_K) -> list[str]:
 
 
 def _vector_rank(
-    vectors: dict[str, list[float]], candidate_paths: set[str], query_vec: list[float], limit: int
+    resolved: embeddings.NoteVectors,
+    picked: np.ndarray,
+    query_vec: np.ndarray,
+    limit: int,
 ) -> list[str]:
-    scored = [
-        (path, cosine(vec, query_vec))
-        for path, vec in vectors.items()
-        if path in candidate_paths
-    ]
-    scored.sort(key=lambda pair: pair[1], reverse=True)
-    return [p for p, s in scored if s > 0][:limit]
+    """Candidate notes by cosine similarity to the query, best first. A note
+    whose vector has another length than the query's (a different model) or a
+    zero norm scores 0, and notes scoring 0 or less are dropped."""
+    matrix, norms = resolved.matrix(len(query_vec))
+    denom = norms[picked] * (float(query_vec @ query_vec) ** 0.5)
+    # einsum, not matmul: a multithreaded BLAS gemv costs more in thread
+    # hand-offs than the 1.5 MFLOPs it computes when the machine is busy.
+    dots = np.einsum("ij,j->i", matrix, query_vec)[picked]
+    scores = np.divide(dots, denom, out=np.zeros(len(picked)), where=denom != 0)
+    positive = np.flatnonzero(scores > 0)
+    best = positive[np.argsort(-scores[positive], kind="stable")][:limit]
+    return [resolved.notes[picked[j]].rel for j in best]
 
 
 def _frontmatter_lines(text: str, body: str) -> list[str]:
@@ -158,23 +176,24 @@ def hybrid_search(
     limit: int = 20,
     prefer_source: bool = True,
 ) -> list[Hit]:
-    candidates = iter_candidate_notes(vault, tags, folder)
-    if not candidates:
+    folder_parts = corpus.folder_parts(vault, folder)
+    snap = corpus.refresh(vault)
+    picked = snap.select(tags, folder_parts)
+    if not len(picked):
         return []
-    corpus = dict(candidates)
-    candidate_paths = set(corpus.keys())
+    live = snap.live
     depth = SOURCE_FIRST_LANE_DEPTH if prefer_source else LANE_DEPTH
 
-    bm25_ranked = [p for p, _ in bm25_mod.rank(corpus, query, limit=depth)]
+    bm25_ranked = [
+        live[picked[j]].rel
+        for j, _ in bm25_mod.rank(
+            [live[i].counts for i in picked], snap.totals[picked], query, limit=depth
+        )
+    ]
 
-    # An unfiltered candidate scan IS the full-vault {rel: text} map — hand
-    # it to the vector layer so every note isn't read from disk twice.
-    all_vectors = get_note_vectors(
-        vault, state_root, embedder,
-        note_texts=corpus if not (tags or folder) else None,
-    )
-    query_vec = embedder.embed_batch([query])[0]
-    vector_ranked = _vector_rank(all_vectors, candidate_paths, query_vec, limit=depth)
+    resolved = embeddings.resolve_vectors(vault, state_root, embedder, snap)
+    query_vec = np.asarray(embedder.embed_batch([query])[0], dtype=np.float64)
+    vector_ranked = _vector_rank(resolved, picked, query_vec, limit=depth)
 
     ranked_lists = [bm25_ranked, vector_ranked]
     if not bm25_ranked:
@@ -182,9 +201,10 @@ def hybrid_search(
         # token-match (e.g. single characters, punctuation-only) fall through
         # to substring matching. When BM25 has results, the alphabetically-
         # ordered substring list would just pollute the fusion.
-        ranked_lists.append(_substring_rank(corpus, query, limit=depth))
+        texts = {live[i].rel: live[i].text for i in picked}
+        ranked_lists.append(_substring_rank(texts, query, limit=depth))
     fused = rrf_fuse(ranked_lists)
     if prefer_source:
-        fused = source_first(fused, corpus, query)
+        fused = source_first(fused, lambda rel: snap.by_rel[rel].meta, query)
     fused = fused[:limit]
-    return [Hit(rel, _excerpt(corpus[rel], rel, query)) for rel in fused]
+    return [Hit(rel, _excerpt(snap.by_rel[rel].text, rel, query)) for rel in fused]
