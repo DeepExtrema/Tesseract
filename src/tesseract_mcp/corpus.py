@@ -30,6 +30,10 @@ from .vault import Vault
 
 RACY_NS = 2_000_000_000
 
+# A note's file name counts this many extra times in its term counts, so a
+# query that names a note scores it above notes that merely repeat the words.
+TITLE_WEIGHT = 3
+
 
 def file_stamp(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
@@ -55,6 +59,7 @@ class Note:
     tags: frozenset[str]
     counts: Counter
     total: int
+    names: tuple[tuple[str, ...], ...]
     sha256: str
 
 
@@ -67,6 +72,7 @@ class Snapshot:
     live: tuple[Note, ...]
     position: dict[str, int]
     totals: np.ndarray
+    named: dict[tuple[str, ...], tuple[int, ...]]
 
     def select(
         self, tags: list[str] | None, folder_parts: tuple[str, ...]
@@ -86,6 +92,18 @@ class Snapshot:
         return np.array(picked, dtype=np.intp)
 
 
+def name_tokens(rel: str, meta: dict) -> tuple[tuple[str, ...], ...]:
+    """The distinct names of a note as token tuples: its file name and its
+    ``aliases`` frontmatter. Every character notes.safe_filename strips from
+    an entity name is a character the tokenizer drops too, so
+    "Project X: Phase 2" is the name of the "Project X Phase 2.md" it was
+    written to."""
+    names = [rel.rsplit("/", 1)[-1][:-3]]
+    aliases = meta.get("aliases") or []
+    names.extend(str(a) for a in (aliases if isinstance(aliases, list) else [aliases]))
+    return tuple(dict.fromkeys(t for t in map(tuple, map(bm25.tokenize, names)) if t))
+
+
 def _sort_key(parts: tuple[str, ...]) -> tuple[str, ...]:
     # Path ordering compares components (case-folded where the platform folds
     # case), not the joined string: "Work/y.md" sorts before "Work Log/x.md".
@@ -102,6 +120,10 @@ def _build_note(
         return replace(prev, stamp=stamp, mtime=st.st_mtime, racy=racy)
     meta = parse_frontmatter(text)
     tokens = bm25.tokenize(text)
+    counts = Counter(tokens)
+    title = bm25.tokenize(rel.rsplit("/", 1)[-1][:-3])
+    for token in title:
+        counts[token] += TITLE_WEIGHT
     parts = tuple(rel.split("/"))
     return Note(
         rel=rel,
@@ -114,8 +136,9 @@ def _build_note(
         meta=meta,
         superseded=meta_is_superseded(meta),
         tags=frozenset(t.casefold() for t in frontmatter_tags(meta)),
-        counts=Counter(tokens),
-        total=len(tokens),
+        counts=counts,
+        total=len(tokens) + TITLE_WEIGHT * len(title),
+        names=name_tokens(rel, meta),
         sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
 
@@ -190,12 +213,17 @@ class NoteIndex:
                 key=lambda n: n.sort_key,
             )
         )
+        named: dict[tuple[str, ...], list[int]] = {}
+        for i, note in enumerate(live):
+            for name in note.names:
+                named.setdefault(name, []).append(i)
         return Snapshot(
             generation=self._generation,
             by_rel=self._notes,
             live=live,
             position={n.rel: i for i, n in enumerate(live)},
             totals=np.array([n.total for n in live], dtype=np.float64),
+            named={name: tuple(ix) for name, ix in named.items()},
         )
 
 
