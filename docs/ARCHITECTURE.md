@@ -74,15 +74,17 @@ directories.
 which runs three independent ranking passes over the same candidate set and
 fuses them:
 
-- **Candidate set.** `search.iter_candidate_notes` walks the vault, applies
-  the optional tag/folder filters, and skips every dot-entry — `.obsidian`,
+- **Candidate set.** `search.iter_candidate_notes` reads the in-process note
+  index (`corpus.py`), which each search brings up to date with one `stat` per
+  file and re-reads only the notes that changed. It applies the optional
+  tag/folder filters, and skips every dot-entry — `.obsidian`,
   `.trash`, `.git` and anything else hidden (`search.is_skipped`, shared with
   the indexer, embeddings, tasks, sheets, the graph and the mover). Every
   ranking pass below only ever sees this filtered set.
 - **BM25 ranking.** `bm25.rank` tokenizes with a simple `[a-z0-9]+` regex
-  and scores the candidates with `rank_bm25`'s `BM25L` variant (chosen over
-  the more common `BM25Okapi` because Okapi's IDF term collapses to zero
-  scores on the small corpora typical of a personal vault). The top
+  and scores the candidates with the `BM25L` variant, computed with numpy
+  (chosen over the more common `BM25Okapi` because Okapi's IDF term collapses
+  to zero scores on the small corpora typical of a personal vault). The top
   positively-scored notes become the BM25-ranked list.
 - **Vector ranking.** Every candidate's embedding is compared to the query
   embedding by cosine similarity; the top candidates with positive similarity
@@ -298,9 +300,9 @@ sequence and records what happened.
 
 The vault's markdown is the single source of truth for everything: notes,
 entity graph, tasks, the organizer's log. Every other file the server
-produces — the BM25-adjacent search index (rebuilt fresh per query, not
-persisted at all), the fallback embedding cache, and the `graph.db` SQLite
-mirror — lives under `~/.tesseract-mcp/` and is derived, disposable state.
+produces — the in-memory search index (built from the files by the first
+search of a server process, never persisted), the fallback embedding cache,
+and the `graph.db` SQLite mirror — lives under `~/.tesseract-mcp/` and is derived, disposable state.
 Delete that entire directory and running `index_brain` (or
 `python -m tesseract_mcp.indexer <vault> --rebuild-only`) rebuilds it from the
 markdown alone; nothing is lost.
@@ -318,7 +320,7 @@ for how to stand it up.
 
 | Module | Responsibility |
 |---|---|
-| `bm25.py` | In-memory BM25 keyword ranking over vault notes, rebuilt fresh per query rather than persisted. |
+| `bm25.py` | In-memory BM25L keyword ranking over per-note term counts held by the note index. |
 | `cache.py` | Derived SQLite cache over the `Claude/Graph` markdown, rebuildable anytime. |
 | `consolidate.py` | LLM-driven consolidation of duplicate graph entities. |
 | `conventions.py` | Installs the `Claude/` conventions tree (constitution, seed notes, root guides) into a vault; idempotent. |

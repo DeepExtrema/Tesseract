@@ -119,7 +119,8 @@ flowchart TB
     GRAPH -.-> DRY
 ```
 
-Markdown is authoritative. The search index is rebuilt per query, and the
+Markdown is authoritative. The search index is held in memory and brought up to date
+from the files before each search, and the
 embedding cache and `graph.db` mirror live in a per-vault state directory, so
 only the vault itself ever travels through LiveSync. Full detail:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
