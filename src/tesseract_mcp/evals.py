@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import re
 import subprocess
 import sys
@@ -34,7 +36,11 @@ FIXTURE_GOLDEN = REPO_ROOT / "evals" / "golden.yaml"
 LIVE_GOLDEN_REL = "Claude/Evals.md"
 HISTORY_FILE = "eval_history.jsonl"
 RETRIEVE_LIMIT = 20
-KS = (5, 10)
+KS = (1, 5, 10)
+CONFIDENCE_Z = 1.96  # 95% interval
+BOOTSTRAP_RESAMPLES = 2000
+BOOTSTRAP_SEED = 20260715  # fixed: the same golden set always prints the same interval
+NO_KIND = "(none)"
 
 
 class EvalConfigError(Exception):
@@ -50,6 +56,7 @@ class GoldenQuery:
     tags: list[str] | None = None
     folder: str | None = None
     note: str = ""
+    kind: str | None = None
 
 
 @dataclass
@@ -61,6 +68,7 @@ class QueryResult:
     success_at: dict[int, bool]
     missing: list[str]
     skipped: bool = False
+    kind: str | None = None
 
 
 @dataclass
@@ -70,6 +78,9 @@ class Scorecard:
     recall_at: dict[int, float]
     mrr: float
     skipped: int
+    success_ci: dict[int, tuple[float, float]] = field(default_factory=dict)
+    mrr_ci: tuple[float, float] = (0.0, 0.0)
+    by_kind: dict[str, dict] = field(default_factory=dict)
 
 
 def first_relevant_rank(hits: list[str], relevant: set[str]) -> int | None:
@@ -87,6 +98,31 @@ def recall_at_k(hits: list[str], expect: set[str], k: int) -> float:
 
 def success_at_k(hits: list[str], relevant: set[str], k: int) -> bool:
     return any(h in relevant for h in hits[:k])
+
+
+def wilson_interval(successes: int, n: int, z: float = CONFIDENCE_Z) -> tuple[float, float]:
+    """Wilson score interval for a success rate over ``n`` questions."""
+    if not n:
+        return (0.0, 0.0)
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def bootstrap_interval(
+    values: list[float],
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> tuple[float, float]:
+    """Percentile bootstrap interval of the mean, resampling the questions."""
+    if not values:
+        return (0.0, 0.0)
+    rng = random.Random(seed)
+    n = len(values)
+    means = sorted(sum(rng.choices(values, k=n)) / n for _ in range(resamples))
+    return (means[int(0.025 * resamples)], means[math.ceil(0.975 * resamples) - 1])
 
 
 _YAML_FENCE_RE = re.compile(r"```yaml\s*\n(.*?)```", re.DOTALL)
@@ -139,6 +175,7 @@ def load_golden(path: str | Path) -> list[GoldenQuery]:
                 tags=_as_str_list(item["tags"], "tags", str(item["id"])) if item.get("tags") else None,
                 folder=str(item["folder"]) if item.get("folder") else None,
                 note=str(item.get("note") or ""),
+                kind=str(item["kind"]) if item.get("kind") else None,
             )
         )
     seen: set[str] = set()
@@ -196,7 +233,8 @@ def run_evals(
         if lenient and set(gone) >= set(q.expect):
             results.append(
                 QueryResult(q.id, [], None, {k: 0.0 for k in ks},
-                            {k: False for k in ks}, gone, skipped=True)
+                            {k: False for k in ks}, gone, skipped=True,
+                            kind=q.kind)
             )
             continue
         hits = hybrid.hybrid_search(
@@ -213,16 +251,33 @@ def run_evals(
                 {k: recall_at_k(paths, expect, k) for k in ks},
                 {k: success_at_k(paths, relevant, k) for k in ks},
                 gone,
+                kind=q.kind,
             )
         )
     scored = [r for r in results if not r.skipped]
     n = len(scored) or 1
+    reciprocal = [1.0 / r.first_rank if r.first_rank else 0.0 for r in scored]
+    by_kind: dict[str, dict] = {}
+    if any(r.kind for r in results):
+        for kind in sorted({r.kind or NO_KIND for r in scored}):
+            rows = [r for r in scored if (r.kind or NO_KIND) == kind]
+            by_kind[kind] = {
+                "n": len(rows),
+                **{f"success_at_{k}": sum(r.success_at[k] for r in rows) / len(rows)
+                   for k in ks},
+            }
     return Scorecard(
         results=results,
         success_at={k: sum(r.success_at[k] for r in scored) / n for k in ks},
         recall_at={k: sum(r.recall_at[k] for r in scored) / n for k in ks},
-        mrr=sum(1.0 / r.first_rank for r in scored if r.first_rank) / n,
+        mrr=sum(reciprocal) / n,
         skipped=len(results) - len(scored),
+        success_ci={
+            k: wilson_interval(sum(r.success_at[k] for r in scored), len(scored))
+            for k in ks
+        },
+        mrr_ci=bootstrap_interval(reciprocal),
+        by_kind=by_kind,
     )
 
 
@@ -239,29 +294,46 @@ def format_table(sc: Scorecard) -> str:
             f"{r.id:<28} {rank:>4} {r.recall_at[kmax]:>5.2f}  {', '.join(r.missing)}"
         )
     scored = len(sc.results) - sc.skipped
-    agg = "  ".join(
-        f"success@{k} {sc.success_at[k]:.2f}" for k in sorted(sc.success_at)
-    )
-    agg += "  " + "  ".join(
-        f"recall@{k} {sc.recall_at[k]:.2f}" for k in sorted(sc.recall_at)
-    )
     lines.append("-" * 60)
+    lines.append(f"queries {scored}  skipped {sc.skipped}")
+    for k in sorted(sc.success_at):
+        lo, hi = sc.success_ci[k]
+        lines.append(f"success@{k:<3} {sc.success_at[k]:.2f}  95% CI {lo:.2f}-{hi:.2f}")
+    lo, hi = sc.mrr_ci
+    lines.append(f"MRR        {sc.mrr:.2f}  95% CI {lo:.2f}-{hi:.2f}")
     lines.append(
-        f"queries {scored}  skipped {sc.skipped}  {agg}  MRR {sc.mrr:.2f}"
+        "recall     "
+        + "  ".join(f"@{k} {sc.recall_at[k]:.2f}" for k in sorted(sc.recall_at))
     )
+    if sc.by_kind:
+        width = max(len(kind) for kind in sc.by_kind)
+        ks = [k for k in (1, 5) if k in sc.success_at]
+        lines.append("")
+        lines.append(
+            f"{'kind':<{width}} {'n':>4}" + "".join(f" {'success@' + str(k):>10}" for k in ks)
+        )
+        for kind, row in sc.by_kind.items():
+            lines.append(
+                f"{kind:<{width}} {row['n']:>4}"
+                + "".join(f" {row[f'success_at_{k}']:>10.2f}" for k in ks)
+            )
     return "\n".join(lines)
 
 
 def to_json(sc: Scorecard) -> dict:
     kmax = max(sc.recall_at)
     d: dict = {f"success_at_{k}": v for k, v in sorted(sc.success_at.items())}
+    d.update({f"success_at_{k}_ci": list(v) for k, v in sorted(sc.success_ci.items())})
     d.update({f"recall_at_{k}": v for k, v in sorted(sc.recall_at.items())})
     d["mrr"] = sc.mrr
+    d["mrr_ci"] = list(sc.mrr_ci)
+    d["by_kind"] = sc.by_kind
     d["skipped"] = sc.skipped
     d["n_queries"] = len(sc.results)
     d["queries"] = [
         {
             "id": r.id,
+            "kind": r.kind,
             "first_rank": r.first_rank,
             "skipped": r.skipped,
             "recall": r.recall_at.get(kmax),

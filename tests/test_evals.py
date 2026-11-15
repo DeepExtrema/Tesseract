@@ -416,3 +416,61 @@ def test_para_dentist_finds_note_within_top_10(tmp_path, monkeypatch):
     r = sc.results[0]
     assert r.success_at[10] is True
     assert r.first_rank is not None and r.first_rank <= 10
+
+
+def test_wilson_interval_matches_a_known_value():
+    from tesseract_mcp.evals import wilson_interval
+
+    lo, hi = wilson_interval(8, 10)
+    assert (round(lo, 3), round(hi, 3)) == (0.490, 0.943)
+    assert wilson_interval(0, 0) == (0.0, 0.0)
+    assert wilson_interval(10, 10)[1] == 1.0
+
+
+def test_bootstrap_interval_is_repeatable_and_brackets_the_mean():
+    from tesseract_mcp.evals import bootstrap_interval
+
+    values = [1.0, 1.0, 0.5, 0.0, 1.0, 0.25, 1.0, 0.0, 1.0, 0.5]
+    lo, hi = bootstrap_interval(values)
+    assert (lo, hi) == bootstrap_interval(values)
+    assert lo <= sum(values) / len(values) <= hi
+    assert 0.0 <= lo < hi <= 1.0
+
+
+def test_scorecard_reports_success_at_1_with_intervals(tmp_path, monkeypatch):
+    vault = _eval_vault(tmp_path, monkeypatch)
+    qs = [
+        GoldenQuery(id="hit", query="alpha", expect=["Notes/A.md"]),
+        GoldenQuery(id="miss", query="zzz-nowhere", expect=["Notes/B.md"]),
+    ]
+    sc = run_evals(vault, tmp_path / "state", KeywordEmbedder(), qs)
+    assert sc.success_at[1] == 0.5
+    lo, hi = sc.success_ci[1]
+    assert lo < 0.5 < hi
+    d = to_json(sc)
+    assert d["success_at_1"] == 0.5 and len(d["success_at_1_ci"]) == 2
+    assert len(d["mrr_ci"]) == 2
+    out = format_table(sc)
+    assert "success@1" in out and "95% CI" in out
+    assert "kind" not in out
+
+
+def test_kind_table_appears_when_a_row_has_a_kind(tmp_path, monkeypatch):
+    golden = tmp_path / "golden.yaml"
+    golden.write_text(
+        "- {id: a, query: alpha, expect: [Notes/A.md], kind: keyword}\n"
+        "- {id: b, query: zzz-nowhere, expect: [Notes/B.md], kind: keyword}\n"
+        "- {id: c, query: beta, expect: [Notes/B.md]}\n",
+        encoding="utf-8",
+    )
+    vault = _eval_vault(tmp_path, monkeypatch)
+    sc = run_evals(vault, tmp_path / "state", KeywordEmbedder(), load_golden(golden))
+    assert sc.by_kind["keyword"] == {
+        "n": 2, "success_at_1": 0.5, "success_at_5": 0.5, "success_at_10": 0.5,
+    }
+    assert sc.by_kind["(none)"]["n"] == 1
+    out = format_table(sc)
+    assert "keyword" in out and "(none)" in out
+    d = to_json(sc)
+    assert d["by_kind"]["keyword"]["n"] == 2
+    assert [q["kind"] for q in d["queries"]] == ["keyword", "keyword", None]
