@@ -11,7 +11,7 @@
 [![MCP server](https://img.shields.io/badge/MCP-FastMCP%20server-6E56CF)](https://modelcontextprotocol.io)
 [![Obsidian](https://img.shields.io/badge/Obsidian-vault-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![25 tools](https://img.shields.io/badge/tools-25-0EA5E9)](#tool-reference)
-[![Retrieval MRR 0.86](https://img.shields.io/badge/retrieval%20MRR-0.86-22C55E)](evals/README.md)
+[![Retrieval MRR 0.87](https://img.shields.io/badge/retrieval%20MRR-0.87-22C55E)](evals/README.md)
 
 [About](#about) · [Architecture](#architecture) · [Features](#features) · [Quickstart](#quickstart) ·
 [Client configuration](#mcp-client-configuration) · [Tool reference](#tool-reference) ·
@@ -39,7 +39,7 @@ write to one memory, and the human owns it, in an editor they already use.
 
 What makes it different from "a vector database with an MCP wrapper":
 
-- **Hybrid retrieval.** BM25 and embedding similarity fused with Reciprocal Rank Fusion.
+- **Hybrid retrieval.** BM25 and embedding similarity combined as a weighted sum of normalised scores.
 - **A knowledge graph you can open.** Entities extracted by an LLM are written as real markdown notes under `Claude/Graph/`, so the graph is browsable in Obsidian's graph view, not locked in a database.
 - **A write contract enforced in code.** Agents write freely under `Claude/`; everything else needs explicit confirmation.
 - **Self-maintaining.** One scheduled Librarian sweep indexes, files and reports what needs repair.
@@ -81,7 +81,7 @@ flowchart TB
     subgraph CORE["Deterministic core · tesseract-mcp"]
         direction LR
         SRV["FastMCP server<br/>25 tools"]
-        HYB["Hybrid search<br/>BM25 + cosine → RRF"]
+        HYB["Hybrid search<br/>BM25 + cosine → weighted sum"]
         GRAPH["Graph store<br/>+ SQLite cache"]
         ORG["Organizer<br/>neighbor-vote filing"]
         LIB["Librarian<br/>scheduled sweep"]
@@ -130,17 +130,18 @@ only the vault itself ever travels through LiveSync. Full detail:
 ```mermaid
 flowchart LR
     Q[query] --> F[candidate filter<br/>tags / folder]
-    F --> B[BM25L keyword rank<br/>top 50]
-    F --> E[cosine similarity<br/>Smart Connections vectors,<br/>bge-micro-v2 fallback<br/>top 50]
-    B --> R[Reciprocal Rank Fusion<br/>k = 60]
-    E --> R
-    F -.->|only when BM25 is empty| SUB[substring rank]
-    SUB -.-> R
-    R --> H[ranked hits with excerpts]
+    F --> B[BM25L keyword score<br/>file name counts 3 extra times]
+    F --> E[cosine similarity<br/>Smart Connections vectors,<br/>bge-micro-v2 fallback]
+    B --> S[min-max normalise,<br/>weighted sum 0.5 / 0.5]
+    E --> S
+    F -.->|only when no note has a keyword score| SUB[substring match]
+    SUB -.-> S
+    S --> W[entity notes x 0.5,<br/>note named by the query first]
+    W --> H[ranked hits with excerpts]
 ```
 
-Fusion works on rank position, so BM25 scores and cosine similarities never
-need normalizing against each other. The substring ranker only fires for
+Every candidate is scored; each lane is scaled to 0-1 over the candidates and
+the two are added. Substring matching only stands in for the keyword score for
 queries the tokenizer can't match, such as single characters or punctuation.
 
 ### The Librarian sweep
@@ -166,7 +167,7 @@ The CLI exits non-zero when any step failed, so a scheduler can alert on it.
 
 | Area | What it does |
 |---|---|
-| **Hybrid search** | BM25L and embedding cosine similarity over the same candidate set, fused with RRF (k = 60). Reuses Obsidian Smart Connections vectors when fresh; falls back to the same model (bge-micro-v2) locally so the vector space is never mixed. |
+| **Hybrid search** | BM25L and embedding cosine similarity over the same candidate set, normalised and added as a weighted sum. Entity notes are weighted down and a note named by the query goes first. Reuses Obsidian Smart Connections vectors when fresh; falls back to the same model (bge-micro-v2) locally so the vector space is never mixed. |
 | **Semantic graph** | An LLM pass extracts people, organizations, domains, topics, projects and sources into entity notes under `Claude/Graph/`, mirrored into SQLite for traversal. `related_notes` ranks connections by strength (each shared entity adds 1/hop, so direct and multiple links win), caps the list (default 20), and explains each one with its entity chain. |
 | **Write contract** | `vault.py` checks every path agents write through and quarantines those writes to `Claude/`. Writing elsewhere requires `confirm_outside_claude=True`. The one caretaker exception is the organizer's moves and link rewrites in the human tree, under the constitution's standing permission; they never edit sheet rows. The human-readable rules ship as a constitution note. |
 | **Structured sheets** | A human folder becomes agent-writable only when it holds a `_schema.md`. `sheet_upsert` validates every field against that schema. |
@@ -380,13 +381,13 @@ same time):
 
 ## Retrieval quality
 
-Latest recorded baseline (2026-07-11), from 17 golden queries run against the
+Latest recorded baseline (2026-11-15), from 17 golden queries run against the
 production `hybrid_search` path with real bge-micro-v2 embeddings over the
 synthetic fixture corpus in [`evals/`](evals/README.md):
 
-| success@5 | success@10 | recall@5 | recall@10 | MRR |
-|---|---|---|---|---|
-| 0.94 | 1.00 | 0.94 | 1.00 | 0.86 |
+| success@1 | success@5 | success@10 | recall@5 | recall@10 | MRR |
+|---|---|---|---|---|---|
+| 0.82 | 1.00 | 1.00 | 1.00 | 1.00 | 0.87 |
 
 The corpus is synthetic because this repo is public; a private golden set
 lives in the vault. Reproduce with `python -m tesseract_mcp.evals`.
