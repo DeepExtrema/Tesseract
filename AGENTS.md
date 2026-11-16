@@ -1,11 +1,15 @@
+Installing Tesseract for a user: follow [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md) (ask the vault path first).
+Consent rules for client-config and vault writes live there and below.
+
 ## Learned User Preferences
 
 - Executes implementation plans via subagent-driven-development: fresh subagent per task, spec compliance review first, then code quality review.
 - Prefers slow, step-by-step deployment walkthroughs when doing something for the first time.
 - For Oracle Cloud VM creation: use On-demand capacity (not Dedicated host), disable Confidential computing on the instance, and pair A1 Flex with an aarch64 Ubuntu image (e.g. Ubuntu 24.04 Minimal aarch64).
 - Oracle image list "BM Confidential computing" in the Security column does not mean every image requires confidential compute; pick aarch64 Ubuntu for A1 and turn off confidential compute only if the instance form shows an incompatibility error.
-- MCP live sync (`python -m tesseract_mcp.mcp_sync` without `--check`) and live-vault styling/provision require explicit user consent; agents dry-run with `--check` and throwaway vaults only.
-- Skill sync (`python -m tesseract_mcp.skill_sync` without `--check`) to the real `~/.claude/skills` requires explicit user consent; agents run `--check` (optionally with a scratch `--dest`) only.
+- Vault provisioning (`python -m tesseract_mcp.provision`, `scripts/install_conventions.py`): show the `--check` output, ask, and run only after an explicit yes for that step on that vault. Trial runs use throwaway vaults.
+- `python -m tesseract_mcp.mcp_sync` without `--check` writes client config: agents run `--check` only; the user runs the live command.
+- Skill sync (`python -m tesseract_mcp.skill_sync`) and `python -m tesseract_mcp.hook_sync --install` write client config: agents run `--check` (optionally with a scratch `--dest`) only; the user runs the live command.
 - Obsidian screenshots from the live vault need human review of every image before commit (LiveSync banner and personal content).
 
 ## Learned Workspace Facts
