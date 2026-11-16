@@ -417,3 +417,63 @@ def test_undo_success_marks_entry_undone_without_temp(org_vault, moved):
     data, names = _journal_state(org_vault)
     assert json.loads(data.decode().splitlines()[-1])["undone"] is True
     assert not [n for n in names if n.endswith(".tmp-write")]
+
+
+def _snapshot(org_vault):
+    root = org_vault.root
+    return {str(p.relative_to(root)): p.read_bytes()
+            for p in root.rglob("*.md") if "Organizer" not in p.name}
+
+
+def _linking_vault(org_vault):
+    (org_vault.root / "Linker.md").write_text(
+        "see [[Loose Space Note]] and [[Loose Space Note|x]]\n", encoding="utf-8")
+
+
+def test_sweep_journal_append_failure_leaves_no_unjournaled_move(
+        org_vault, monkeypatch):
+    from tesseract_mcp import organizer
+    _linking_vault(org_vault)
+    before = _snapshot(org_vault)
+    manifest_before = indexer.load_manifest(org_vault.root)
+
+    def broken(fd, data):
+        raise OSError("disk full")
+    monkeypatch.setattr(organizer, "_write_all", broken)
+    with pytest.raises(OSError):
+        run_sweep(org_vault, ClusterEmbedder(), apply=True)
+    assert _snapshot(org_vault) == before
+    assert indexer.load_manifest(org_vault.root) == manifest_before
+    jp = journal_path(org_vault)
+    assert not jp.exists() or jp.read_text(encoding="utf-8").strip() == ""
+
+
+def test_sweep_unwritable_journal_moves_nothing(org_vault):
+    journal_path(org_vault).mkdir(parents=True)  # cannot be opened for append
+    before = _snapshot(org_vault)
+    with pytest.raises(OSError):
+        run_sweep(org_vault, ClusterEmbedder(), apply=True)
+    assert _snapshot(org_vault) == before
+
+
+def test_sweep_note_append_failure_keeps_move_undoable(org_vault, monkeypatch):
+    from tesseract_mcp import vault as vault_mod
+    _linking_vault(org_vault)
+    before = _snapshot(org_vault)
+    real = vault_mod._write_all
+
+    def flaky(fd, data):
+        if b"moved [[" in data:
+            raise OSError("note locked")
+        real(fd, data)
+    monkeypatch.setattr(vault_mod, "_write_all", flaky)
+    try:
+        run_sweep(org_vault, ClusterEmbedder(), apply=True)
+    except OSError:
+        pass
+    entries = [json.loads(l) for l in
+               journal_path(org_vault).read_text(encoding="utf-8").splitlines()]
+    assert entries and _snapshot(org_vault) != before
+    for e in entries:
+        undo_move(org_vault, e["to"])
+    assert _snapshot(org_vault) == before
