@@ -128,6 +128,18 @@ def _partition(
     return note_texts, fallback_cache, vectors, stale
 
 
+def rename_cache_entry(state_root: Path, old_rel: str, new_rel: str) -> None:
+    """Move a note's fallback-cache vector to its new path. The entry keeps
+    its content hash, so an unchanged note is not re-embedded and a changed
+    one (rewritten self-link) simply reads as stale. No-op when absent."""
+    path = _fallback_path(state_root)
+    cache = load_vector_cache(path)
+    if old_rel not in cache:
+        return
+    cache[new_rel] = cache.pop(old_rel)
+    save_vector_cache(path, cache)
+
+
 def get_note_vectors(
     vault: Vault,
     state_root: Path,

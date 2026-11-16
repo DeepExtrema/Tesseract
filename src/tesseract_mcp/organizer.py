@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ from .mover import (
     _plan_rewrites,
     duplicate_stem_exists,
     move_note,
+    rename_vector_cache_entry,
     reverse_rewrites,
 )
 from .search import parse_frontmatter
@@ -202,6 +204,7 @@ def _reverse_move(vault: Vault, entry: dict) -> None:
         vault, entry["from"], entry["to"], [r["path"] for r in entry["rewrites"]]
     )
     indexer.rename_manifest_entry(vault.root, entry["to"], entry["from"])
+    rename_vector_cache_entry(vault, entry["to"], entry["from"])
 
 
 def undo_move(vault: Vault, note_rel: str) -> dict:
@@ -236,6 +239,10 @@ def undo_move(vault: Vault, note_rel: str) -> dict:
         f"- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — UNDID move of "
         f"`{entry['to']}` back to `{entry['from']}`\n",
     )
+    try:  # graph mentions follow the reversed link rewrite; best effort
+        cache.rebuild(vault, indexer.db_path(vault.root))
+    except (OSError, sqlite3.Error):
+        pass  # the next sweep or index run rebuilds it
     return {"restored": entry["from"], "was": entry["to"]}
 
 

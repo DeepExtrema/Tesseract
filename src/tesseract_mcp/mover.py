@@ -13,7 +13,7 @@ import os
 import re
 from pathlib import Path
 
-from . import indexer
+from . import embeddings, indexer
 from .search import iter_note_files
 from .vault import Vault, VaultError, _retry_locked
 
@@ -76,6 +76,17 @@ def _plan_rewrites(
     return plans
 
 
+def rename_vector_cache_entry(vault: Vault, old_rel: str, new_rel: str) -> None:
+    """Best effort: the files already moved, so a cache failure must not
+    undo or fail the move. A missed rename self-heals (the note is just
+    re-embedded on the next search)."""
+    try:
+        embeddings.rename_cache_entry(
+            indexer.state_dir(vault.root), old_rel, new_rel)
+    except OSError:
+        pass
+
+
 class ProtectedLinkError(VaultError):
     """The move would rewrite links inside notes the caller protects."""
 
@@ -120,6 +131,7 @@ def move_note(vault: Vault, old_rel: str, new_rel: str, protect=None) -> dict:
             pass
         raise
     indexer.rename_manifest_entry(vault.root, old_rel, new_rel)
+    rename_vector_cache_entry(vault, old_rel, new_rel)
     return {"from": old_rel, "to": new_rel,
             "rewrites": [{"path": rel, "count": count}
                          for _p, rel, _o, _r, count in plans]}

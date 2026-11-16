@@ -477,3 +477,100 @@ def test_sweep_note_append_failure_keeps_move_undoable(org_vault, monkeypatch):
     for e in entries:
         undo_move(org_vault, e["to"])
     assert _snapshot(org_vault) == before
+
+
+# ---- path-keyed search state follows moves and undos -----------------------
+
+class CountingEmbedder(ClusterEmbedder):
+    def __init__(self):
+        self.embedded: list[str] = []
+
+    def embed_batch(self, texts):
+        self.embedded.extend(texts)
+        return super().embed_batch(texts)
+
+
+LOOSE = "Loose Space Note.md"
+FILED = "02 - Space/Loose Space Note.md"
+
+
+def _fallback_cache(vault):
+    from tesseract_mcp import embeddings
+    return embeddings.load_vector_cache(
+        embeddings._fallback_path(indexer.state_dir(vault.root)))
+
+
+def _search(vault, embedder):
+    from tesseract_mcp.hybrid import hybrid_search
+    return [h.path for h in hybrid_search(
+        vault, indexer.state_dir(vault.root), embedder, "orbital telemetry")]
+
+
+def _warm(vault):
+    from tesseract_mcp import embeddings
+    embeddings.get_note_vectors(vault, indexer.state_dir(vault.root),
+                                ClusterEmbedder())
+
+
+def _note_text_embedded(embedder):
+    return "space orbital telemetry note\n" in embedder.embedded
+
+
+def test_move_carries_vector_instead_of_reembedding(org_vault):
+    _warm(org_vault)
+    move_note(org_vault, LOOSE, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert FILED in paths and LOOSE not in paths
+    assert not _note_text_embedded(emb)
+    cache = _fallback_cache(org_vault)
+    assert FILED in cache and LOOSE not in cache
+
+
+def test_undo_carries_vector_back(org_vault, moved):
+    _warm(org_vault)  # warmed at the moved location
+    undo_move(org_vault, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert LOOSE in paths and FILED not in paths
+    assert not _note_text_embedded(emb)
+    cache = _fallback_cache(org_vault)
+    assert LOOSE in cache and FILED not in cache
+
+
+def test_note_with_rewritten_backlink_is_still_found(org_vault):
+    """A linker's content changes with the rewrite, so it is re-embedded (its
+    hash no longer matches); it must still be searchable at its own path."""
+    (org_vault.root / "Linker.md").write_text(
+        "space orbital see [[Loose Space Note]]\n", encoding="utf-8")
+    _warm(org_vault)
+    move_note(org_vault, LOOSE, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert "Linker.md" in paths and FILED in paths
+
+
+def _graph_vault(org_vault):
+    from tesseract_mcp import cache
+    (org_vault.root / "Claude" / "Graph" / "Topics").mkdir(parents=True)
+    (org_vault.root / "Claude" / "Graph" / "Topics" / "Space.md").write_text(
+        "# Space\n\nspace stuff\n\n## Mentions\n\n"
+        "- [[Loose Space Note|Loose]] — e\n"
+        "- [[02 - Space/NASA JPL|NASA]] — e\n", encoding="utf-8")
+    cache.rebuild(org_vault, indexer.db_path(org_vault.root))
+
+
+def test_related_notes_follow_undo_without_manual_rebuild(org_vault):
+    from tesseract_mcp import cache
+    _graph_vault(org_vault)
+    db = indexer.db_path(org_vault.root)
+    record = move_note(org_vault, LOOSE, FILED)
+    record_move(org_vault, record, share=0.9, neighbors=[])
+    cache.rebuild(org_vault, db)  # what run_sweep does
+    got = [r["path"] for r in cache.related_notes(
+        db, org_vault, "02 - Space/NASA JPL.md")]
+    assert got == [FILED]
+    undo_move(org_vault, FILED)
+    got = [r["path"] for r in cache.related_notes(
+        db, org_vault, "02 - Space/NASA JPL.md")]
+    assert got == [LOOSE]
