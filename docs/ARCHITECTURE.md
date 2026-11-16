@@ -240,7 +240,8 @@ the vault's top-level folders.
   undone ones included, whoever made the move; no new state exists. The
   budget is per machine (the journal is) and shared with other moves
   journaled that day. Dry-runs are not capped; the CLI and the Librarian are
-  unaffected.
+  unaffected. An apply call that moves nothing still appends its proposals
+  to `Claude/Organizer.md`, as every apply sweep does.
 - **Running it.** The organizer sweep is normally invoked by the Librarian
   caretaker loop (see §6); the standalone CLI
   `python -m tesseract_mcp.organize <vault> [--dry-run]` remains available

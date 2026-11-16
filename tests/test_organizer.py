@@ -690,6 +690,23 @@ def test_yesterdays_and_torn_journal_lines_do_not_count(
     assert len(result["moved"]) == 1
 
 
+def test_budget_subtracts_moves_already_made_today(org_vault, budget_srv, monkeypatch):
+    monkeypatch.setenv(BUDGET_ENV, "2")
+    _seed_journal(org_vault, _journal_line(_now()))
+    result = budget_srv.organize_vault(apply=True)
+    assert result["move_budget"]["remaining"] == 1
+    assert len(result["moved"]) == 1
+    assert len(_loose(org_vault)) == 1
+
+
+def test_no_tool_apply_refusal_precedes_the_budget(org_vault, budget_srv, monkeypatch):
+    monkeypatch.setenv("TESSERACT_NO_TOOL_APPLY", "1")
+    monkeypatch.setenv(BUDGET_ENV, "abc")  # would raise its own error if read first
+    with pytest.raises(VaultError, match="TESSERACT_NO_TOOL_APPLY"):
+        budget_srv.organize_vault(apply=True)
+    assert len(_loose(org_vault)) == 2
+
+
 def test_dry_run_with_zero_budget_is_not_truncated(org_vault, budget_srv):
     uncapped = run_sweep(org_vault, ClusterEmbedder(), apply=False)
     preview = budget_srv.organize_vault(apply=False)

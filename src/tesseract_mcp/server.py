@@ -179,8 +179,10 @@ def organize_vault(apply: bool = False) -> dict:
     it, agent apply calls move nothing. The budget is counted from this
     machine's undo journal, includes undone moves, and is shared with every
     other move journaled today (the scheduled Librarian and CLI are not
-    limited by it). Apply results carry `move_budget`. The scheduled CLI
-    sweep is the autonomous path — see constitution → Organizer."""
+    limited by it). Apply results carry `move_budget`. Like any apply call,
+    one that moves nothing still appends its proposals to Claude/Organizer.md.
+    The scheduled CLI sweep is the autonomous path — see constitution →
+    Organizer."""
     if apply:
         _refuse_tool_apply("organize_vault(apply=True)",
                            "python -m tesseract_mcp.organize <vault>")
@@ -195,10 +197,15 @@ def organize_vault(apply: bool = False) -> dict:
             "per_day": per_day, "used_today": used, "remaining": remaining,
             "setting": AGENT_MOVES_ENV,
         }
-        if remaining == 0:
+        if per_day == 0:
             result["note"] = (
-                f"Move budget spent ({used} of {per_day} today); nothing "
-                f"moved. The human raises it with {AGENT_MOVES_ENV}.")
+                "Agent moves are off (the default); nothing moved. The human "
+                f"turns them on with {AGENT_MOVES_ENV}.")
+        elif remaining == 0:
+            result["note"] = (
+                f"Today's move budget is used ({used} journaled moves, budget "
+                f"{per_day}); nothing moved. The human raises it with "
+                f"{AGENT_MOVES_ENV}.")
         return result
     return organizer_mod.run_sweep(get_vault(), _get_embedder(), apply=apply)
 
