@@ -144,3 +144,17 @@ def test_upsert_concept_existing_keeps_frontmatter(vault):
     assert text.split("---\n")[1] == before
     assert "origin" not in _fm(text)
     assert "other:1" not in text
+
+
+def test_upsert_concept_update_keeps_existing_origin(vault):
+    rel = notes.upsert_concept(vault, "Kept", "x", now=NOW, origin="first:1")
+    notes.upsert_concept(vault, "Kept", "y", now=NOW, origin="second:2")
+    text = vault.read(rel)
+    assert _fm(text)["origin"] == "first:1"
+    assert "second:2" not in text
+
+
+def test_blank_origin_is_omitted(vault):
+    rel = notes.log_session(vault, "Blank", "body", project="p", tags=[],
+                            now=NOW, origin="  ")
+    assert "origin" not in _fm(vault.read(rel))
