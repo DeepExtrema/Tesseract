@@ -145,6 +145,29 @@ def _ensure_note(vault: Vault) -> None:
         vault.write(ORGANIZER_NOTE, _NOTE_SEED)
 
 
+def _open_journal(vault: Vault) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | platforms.current.O_BINARY
+    return os.open(journal_path(vault), flags, 0o666)
+
+
+def _append_journal(vault: Vault, entry: dict) -> None:
+    """One raw write per entry; a failed write is truncated away so a torn
+    line can never poison undo's line-by-line parse."""
+    fd = _open_journal(vault)
+    try:
+        size = os.fstat(fd).st_size
+        try:
+            _write_all(fd, (json.dumps(entry) + "\n").encode("utf-8"))
+        except BaseException:
+            try:
+                os.ftruncate(fd, size)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(fd)
+
+
 def record_move(
     vault: Vault, record: dict, share: float, neighbors: list[str]
 ) -> None:
@@ -157,8 +180,12 @@ def record_move(
         "rewrites": record["rewrites"],
         "undone": False,
     }
-    with journal_path(vault).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    try:
+        _append_journal(vault, entry)
+    except BaseException:
+        # an unjournaled move can never be undone: put everything back
+        _reverse_move(vault, entry)
+        raise
     _ensure_note(vault)
     stem = record["to"].rsplit("/", 1)[-1][:-3]
     vault.append(
@@ -166,6 +193,14 @@ def record_move(
         f"- {entry['ts']} — moved [[{record['to'][:-3]}|{stem}]] "
         f"from `{record['from']}` (share {share:.2f})\n",
     )
+
+
+def _reverse_move(vault: Vault, entry: dict) -> None:
+    _move_file(vault.resolve(entry["to"]), vault.resolve(entry["from"]))
+    reverse_rewrites(
+        vault, entry["from"], entry["to"], [r["path"] for r in entry["rewrites"]]
+    )
+    indexer.rename_manifest_entry(vault.root, entry["to"], entry["from"])
 
 
 def undo_move(vault: Vault, note_rel: str) -> dict:
@@ -191,14 +226,7 @@ def undo_move(vault: Vault, note_rel: str) -> dict:
         raise VaultError(f"Cannot undo: file no longer at {entry['to']}")
     if dst.exists():
         raise VaultError(f"Cannot undo: original location occupied: {entry['from']}")
-    _move_file(src, dst)  # rides out transient sync/AV locks
-    reverse_rewrites(
-        vault,
-        entry["from"],
-        entry["to"],
-        [r["path"] for r in entry["rewrites"]],
-    )
-    indexer.rename_manifest_entry(vault.root, entry["to"], entry["from"])
+    _reverse_move(vault, entry)  # rides out transient sync/AV locks
     entries[target_idx]["undone"] = True
     write_text_atomic(jp, "".join(json.dumps(e) + "\n" for e in entries))
     _ensure_note(vault)
@@ -215,6 +243,8 @@ def run_sweep(
 ) -> dict:
     """max_moves caps moves per sweep (None = unlimited); confident moves past
     the cap are skipped and re-evaluated next sweep."""
+    if apply:  # fail before any move if the journal cannot be opened
+        os.close(_open_journal(vault))
     if embedder is None:
         embedder = embeddings_mod.SentenceTransformerEmbedder()
     vectors = embeddings_mod.get_note_vectors(
