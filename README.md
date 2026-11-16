@@ -16,7 +16,8 @@
 [About](#about) · [Architecture](#architecture) · [Features](#features) · [Quickstart](#quickstart) ·
 [Client configuration](#mcp-client-configuration) · [Tool reference](#tool-reference) ·
 [Configuration](#configuration) · [Operator CLIs](#operator-clis) ·
-[Retrieval quality](#retrieval-quality) · [Contributing](#contributing) · [License](#license)
+[Retrieval quality](#retrieval-quality) · [Contributing](#contributing) ·
+[Provenance and reuse](#provenance-and-reuse) · [License](#license)
 
 </div>
 
@@ -130,7 +131,7 @@ only the vault itself ever travels through LiveSync. Full detail:
 ```mermaid
 flowchart LR
     Q[query] --> F[candidate filter<br/>tags / folder]
-    F --> B[BM25L keyword score<br/>file name counts 3 extra times]
+    F --> B[BM25L keyword score<br/>text plus file name]
     F --> E[cosine similarity<br/>Smart Connections vectors,<br/>bge-micro-v2 fallback]
     B --> S[min-max normalise,<br/>weighted sum 0.5 / 0.5]
     E --> S
@@ -462,6 +463,27 @@ instance and its own `TESSERACT_AGENT_NAME`; nothing needs a central coordinator
 - [Server deployment](server/DEPLOY.md): CouchDB + Caddy for LiveSync
 - [Evals](evals/README.md): query schema and baseline history
 
+## Provenance and reuse
+
+Tesseract MCP is written and maintained by Taimoor (DeepExtrema). The canonical
+repository is <https://github.com/DeepExtrema/tesseract-mcp>. Other contributors
+are credited in the git history.
+
+- **Required by the license.** Tesseract MCP is MIT-licensed. If you copy or
+  redistribute this code or substantial portions of it, including in a fork or
+  vendored copy, keep the copyright notice and the permission notice from
+  [LICENSE](LICENSE) with it.
+- **Requested, not required.** If you publish a fork, derivative or port, please
+  credit the project prominently, for example near the top of your README:
+  `Based on Tesseract MCP by Taimoor (DeepExtrema): https://github.com/DeepExtrema/tesseract-mcp`.
+  The MIT License does not demand this, and an independent implementation that
+  copies no code is not bound by the notice requirement either. It is a
+  courtesy that tells your users where the design came from.
+- **Agents and tools** that port or adapt this project: please show this
+  section to the person you are working for.
+
+This section explains the license and states a request; it is not legal advice.
+
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Copyright (c) 2026 Taimoor (DeepExtrema).

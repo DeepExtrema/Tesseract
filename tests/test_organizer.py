@@ -1,4 +1,9 @@
+import asyncio
+import os
+from pathlib import Path
+
 import json
+import threading
 
 import pytest
 
@@ -305,3 +310,291 @@ def test_move_that_would_edit_a_sheet_row_becomes_a_proposal(org_vault, apply):
     assert prop and prop[0]["reason"].startswith("linked from sheet rows")
     assert (org_vault.root / "Loose Space Note.md").is_file()
     assert row.read_bytes() == before
+
+
+def test_server_undo_refused_while_sweep_holds_caretaker_lock(
+        org_vault, tmp_path, monkeypatch):
+    """A tool-level undo must not interleave with a running apply sweep."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    from tesseract_mcp import organizer as organizer_mod
+    from tesseract_mcp import server
+    from tesseract_mcp.locking import caretaker_lock
+
+    monkeypatch.setenv("TESSERACT_VAULT_PATH", str(org_vault.root))
+    monkeypatch.setenv("TESSERACT_STATE_DIR", str(tmp_path / "state"))
+    server._vault = None
+    record = move_note(org_vault, "02 - Space/SmallSat.md",
+                       "02 - Space/SmallSat Renamed.md")
+    record_move(org_vault, record, share=0.9, neighbors=[])
+
+    in_sweep, release = threading.Event(), threading.Event()
+    real_move = organizer_mod.move_note
+
+    def paused_move(*args, **kwargs):
+        in_sweep.set()
+        assert release.wait(10)
+        return real_move(*args, **kwargs)
+
+    monkeypatch.setattr(organizer_mod, "move_note", paused_move)
+    errors = []
+
+    def sweep():
+        try:
+            with caretaker_lock(indexer.state_dir(org_vault.root)):
+                run_sweep(org_vault, ClusterEmbedder(), apply=True)
+        except Exception as e:  # surfaced below
+            errors.append(e)
+
+    t = threading.Thread(target=sweep)
+    t.start()
+    try:
+        assert in_sweep.wait(10)
+        snap = lambda: (
+            sorted(p.relative_to(org_vault.root).as_posix()
+                   for p in org_vault.root.rglob("*") if p.is_file()),
+            journal_path(org_vault).read_bytes(),
+            json.dumps(indexer.load_manifest(org_vault.root), sort_keys=True),
+        )
+        before = snap()
+        with pytest.raises(ToolError, match="another caretaker"):
+            asyncio.run(server.mcp.call_tool(
+                "undo_move", {"path": "02 - Space/SmallSat Renamed.md"}))
+        assert snap() == before
+    finally:
+        release.set()
+        t.join(15)
+    assert not t.is_alive()
+    assert not errors, errors
+
+    result = server.undo_move("02 - Space/SmallSat Renamed.md")
+    assert result["restored"] == "02 - Space/SmallSat.md"
+    server._vault = None
+
+
+def _journal_state(org_vault):
+    jp = journal_path(org_vault)
+    return jp.read_bytes(), sorted(p.name for p in jp.parent.iterdir())
+
+
+def test_undo_failed_journal_write_keeps_journal(org_vault, moved, monkeypatch):
+    before = _journal_state(org_vault)
+    real = Path.write_text
+
+    def broken(self, data, *a, **kw):
+        real(self, data[: len(data) // 2], *a, **kw)
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "write_text", broken)
+        with pytest.raises(OSError):
+            undo_move(org_vault, "02 - Space/Loose Space Note.md")
+    assert _journal_state(org_vault) == before
+    entries = [json.loads(l) for l in before[0].decode().splitlines()]
+    assert entries[-1]["to"] == "02 - Space/Loose Space Note.md"
+    assert not entries[-1].get("undone")
+
+
+def test_undo_failed_journal_replace_keeps_journal(org_vault, moved, monkeypatch):
+    before = _journal_state(org_vault)
+    jp = journal_path(org_vault)
+    real_replace = os.replace
+
+    def locked(src, dst):
+        if Path(dst) == jp:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as mp:
+        mp.setattr("os.replace", locked)
+        mp.setattr("time.sleep", lambda s: None)
+        with pytest.raises(PermissionError):
+            undo_move(org_vault, "02 - Space/Loose Space Note.md")
+    assert _journal_state(org_vault) == before
+
+
+def test_undo_success_marks_entry_undone_without_temp(org_vault, moved):
+    undo_move(org_vault, "02 - Space/Loose Space Note.md")
+    data, names = _journal_state(org_vault)
+    assert json.loads(data.decode().splitlines()[-1])["undone"] is True
+    assert not [n for n in names if n.endswith(".tmp-write")]
+
+
+def _snapshot(org_vault):
+    root = org_vault.root
+    return {str(p.relative_to(root)): p.read_bytes()
+            for p in root.rglob("*.md") if "Organizer" not in p.name}
+
+
+def _linking_vault(org_vault):
+    (org_vault.root / "Linker.md").write_text(
+        "see [[Loose Space Note]] and [[Loose Space Note|x]]\n", encoding="utf-8")
+
+
+def test_sweep_journal_append_failure_leaves_no_unjournaled_move(
+        org_vault, monkeypatch):
+    from tesseract_mcp import organizer
+    _linking_vault(org_vault)
+    before = _snapshot(org_vault)
+    manifest_before = indexer.load_manifest(org_vault.root)
+
+    def broken(fd, data):
+        raise OSError("disk full")
+    monkeypatch.setattr(organizer, "_write_all", broken)
+    with pytest.raises(OSError):
+        run_sweep(org_vault, ClusterEmbedder(), apply=True)
+    assert _snapshot(org_vault) == before
+    assert indexer.load_manifest(org_vault.root) == manifest_before
+    jp = journal_path(org_vault)
+    assert not jp.exists() or jp.read_text(encoding="utf-8").strip() == ""
+    cache = _fallback_cache(org_vault)  # rollback moved the vector key back too
+    assert cache and all((org_vault.root / rel).is_file() for rel in cache)
+
+
+def test_sweep_unwritable_journal_moves_nothing(org_vault):
+    journal_path(org_vault).mkdir(parents=True)  # cannot be opened for append
+    before = _snapshot(org_vault)
+    emb = CountingEmbedder()
+    with pytest.raises(OSError):
+        run_sweep(org_vault, emb, apply=True)
+    assert _snapshot(org_vault) == before
+    assert emb.embedded == []  # refused before any work, not rolled back after
+
+
+def test_torn_journal_line_does_not_block_undo(org_vault):
+    record = move_note(org_vault, LOOSE, FILED)
+    record_move(org_vault, record, share=0.9, neighbors=[])
+    with journal_path(org_vault).open("ab") as f:
+        f.write(b'{"ts": "2026-11-16 02:00:00", "from": "x.md", "to')  # killed mid-append
+    record = move_note(org_vault, "02 - Space/SmallSat.md", "SmallSat.md")
+    record_move(org_vault, record, share=0.9, neighbors=[])
+    assert undo_move(org_vault, "SmallSat.md")["restored"] == "02 - Space/SmallSat.md"
+    assert undo_move(org_vault, FILED)["restored"] == LOOSE
+
+
+def test_move_with_unsavable_manifest_is_rolled_back(org_vault):
+    _linking_vault(org_vault)
+    before = _snapshot(org_vault)
+    indexer._manifest_path(org_vault.root).write_text("{not json", encoding="utf-8")
+    with pytest.raises(Exception):
+        move_note(org_vault, LOOSE, FILED)
+    assert _snapshot(org_vault) == before
+
+
+def test_sweep_note_append_failure_keeps_move_undoable(org_vault, monkeypatch):
+    from tesseract_mcp import vault as vault_mod
+    _linking_vault(org_vault)
+    before = _snapshot(org_vault)
+    real = vault_mod._write_all
+
+    def flaky(fd, data):
+        if b"moved [[" in data:
+            raise OSError("note locked")
+        real(fd, data)
+    monkeypatch.setattr(vault_mod, "_write_all", flaky)
+    with pytest.raises(OSError, match="note locked"):
+        run_sweep(org_vault, ClusterEmbedder(), apply=True)
+    entries = [json.loads(l) for l in
+               journal_path(org_vault).read_text(encoding="utf-8").splitlines()]
+    assert entries and _snapshot(org_vault) != before
+    for e in entries:
+        undo_move(org_vault, e["to"])
+    assert _snapshot(org_vault) == before
+
+
+# ---- path-keyed search state follows moves and undos -----------------------
+
+class CountingEmbedder(ClusterEmbedder):
+    def __init__(self):
+        self.embedded: list[str] = []
+
+    def embed_batch(self, texts):
+        self.embedded.extend(texts)
+        return super().embed_batch(texts)
+
+
+LOOSE = "Loose Space Note.md"
+FILED = "02 - Space/Loose Space Note.md"
+
+
+def _fallback_cache(vault):
+    """Stored vectors as they are on disk, read by a fresh store."""
+    from tesseract_mcp import embeddings
+    return embeddings.VectorStore(
+        indexer.state_dir(vault.root)).refresh(persist=False).rows
+
+
+def _search(vault, embedder):
+    from tesseract_mcp.hybrid import hybrid_search
+    return [h.path for h in hybrid_search(
+        vault, indexer.state_dir(vault.root), embedder, "orbital telemetry")]
+
+
+def _warm(vault):
+    from tesseract_mcp import embeddings
+    embeddings.get_note_vectors(vault, indexer.state_dir(vault.root),
+                                ClusterEmbedder())
+
+
+def _note_text_embedded(embedder):
+    return "space orbital telemetry note\n" in embedder.embedded
+
+
+def test_move_carries_vector_instead_of_reembedding(org_vault):
+    _warm(org_vault)
+    move_note(org_vault, LOOSE, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert FILED in paths and LOOSE not in paths
+    assert not _note_text_embedded(emb)
+    cache = _fallback_cache(org_vault)
+    assert FILED in cache and LOOSE not in cache
+
+
+def test_undo_carries_vector_back(org_vault, moved):
+    _warm(org_vault)  # warmed at the moved location
+    undo_move(org_vault, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert LOOSE in paths and FILED not in paths
+    assert not _note_text_embedded(emb)
+    cache = _fallback_cache(org_vault)
+    assert LOOSE in cache and FILED not in cache
+
+
+def test_note_with_rewritten_backlink_is_still_found(org_vault):
+    """A linker's content changes with the rewrite, so it is re-embedded (its
+    hash no longer matches); it must still be searchable at its own path."""
+    (org_vault.root / "Linker.md").write_text(
+        "space orbital see [[Loose Space Note]]\n", encoding="utf-8")
+    _warm(org_vault)
+    move_note(org_vault, LOOSE, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert "Linker.md" in paths and FILED in paths
+
+
+def _graph_vault(org_vault):
+    from tesseract_mcp import cache
+    (org_vault.root / "Claude" / "Graph" / "Topics").mkdir(parents=True)
+    (org_vault.root / "Claude" / "Graph" / "Topics" / "Space.md").write_text(
+        "# Space\n\nspace stuff\n\n## Mentions\n\n"
+        "- [[Loose Space Note|Loose]] — e\n"
+        "- [[02 - Space/NASA JPL|NASA]] — e\n", encoding="utf-8")
+    cache.rebuild(org_vault, indexer.db_path(org_vault.root))
+
+
+def test_related_notes_follow_undo_without_manual_rebuild(org_vault):
+    from tesseract_mcp import cache
+    _graph_vault(org_vault)
+    db = indexer.db_path(org_vault.root)
+    record = move_note(org_vault, LOOSE, FILED)
+    record_move(org_vault, record, share=0.9, neighbors=[])
+    cache.rebuild(org_vault, db)  # what run_sweep does
+    got = [r["path"] for r in cache.related_notes(
+        db, org_vault, "02 - Space/NASA JPL.md")]
+    assert got == [FILED]
+    undo_move(org_vault, FILED)
+    got = [r["path"] for r in cache.related_notes(
+        db, org_vault, "02 - Space/NASA JPL.md")]
+    assert got == [LOOSE]

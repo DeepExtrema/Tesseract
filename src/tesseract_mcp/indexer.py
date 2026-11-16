@@ -13,7 +13,7 @@ from . import embeddings as embeddings_mod
 from .extractor import ExtractorError, extraction_extractor
 from .graphstore import GRAPH_ROOT, GraphStore
 from .search import iter_note_files
-from .vault import Vault, VaultError
+from .vault import Vault, VaultError, write_text_atomic
 
 DEFAULT_IGNORE = ("copilot",)
 DEFAULT_BATCH = 25
@@ -70,9 +70,7 @@ def load_manifest(vault_root: str | Path | None = None) -> dict:
 
 
 def save_manifest(manifest: dict, vault_root: str | Path | None = None) -> None:
-    _manifest_path(vault_root).write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
-    )
+    write_text_atomic(_manifest_path(vault_root), json.dumps(manifest, indent=2))
 
 
 def scan_notes(vault: Vault, ignore: tuple[str, ...] = DEFAULT_IGNORE) -> dict[str, str]:

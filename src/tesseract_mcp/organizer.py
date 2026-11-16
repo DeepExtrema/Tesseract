@@ -10,11 +10,13 @@ threshold, hard exclusions below.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import cache, indexer
+from . import cache, indexer, platforms
 from . import embeddings as embeddings_mod
 from . import sheets
 from .embeddings import cosine
@@ -24,10 +26,11 @@ from .mover import (
     _plan_rewrites,
     duplicate_stem_exists,
     move_note,
+    rename_vector_cache_entry,
     reverse_rewrites,
 )
 from .search import parse_frontmatter
-from .vault import Vault, VaultError
+from .vault import Vault, VaultError, _retry_locked, _write_all, write_text_atomic
 
 EXCLUDED_DIRS = frozenset({
     "Claude", "00 - Maps of Content", ".obsidian", ".smart-env",
@@ -145,6 +148,37 @@ def _ensure_note(vault: Vault) -> None:
         vault.write(ORGANIZER_NOTE, _NOTE_SEED)
 
 
+def _open_journal(vault: Vault) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | platforms.current.O_BINARY
+    return _retry_locked(lambda: os.open(journal_path(vault), flags, 0o666))
+
+
+def _append_journal(vault: Vault, entry: dict) -> None:
+    """One raw write per entry. A failed write is truncated away (best
+    effort); if a killed process left a torn last line anyway, the new entry
+    starts on a fresh line and undo skips the torn one."""
+    data = (json.dumps(entry) + "\n").encode("utf-8")
+    jp = journal_path(vault)
+    if jp.is_file() and jp.stat().st_size:
+        with jp.open("rb") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                data = b"\n" + data
+    fd = _open_journal(vault)
+    try:
+        size = os.fstat(fd).st_size
+        try:
+            _write_all(fd, data)
+        except BaseException:
+            try:
+                os.ftruncate(fd, size)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(fd)
+
+
 def record_move(
     vault: Vault, record: dict, share: float, neighbors: list[str]
 ) -> None:
@@ -157,8 +191,17 @@ def record_move(
         "rewrites": record["rewrites"],
         "undone": False,
     }
-    with journal_path(vault).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    try:
+        _append_journal(vault, entry)
+    except BaseException as e:
+        # an unjournaled move can never be undone: put everything back.
+        # Not covered: a kill between move_note and this append, or a
+        # rollback that itself fails, leaves the move unjournaled.
+        try:
+            _reverse_move(vault, entry)
+        except BaseException as rollback_error:
+            e.add_note(f"rollback also failed: {rollback_error!r}")
+        raise
     _ensure_note(vault)
     stem = record["to"].rsplit("/", 1)[-1][:-3]
     vault.append(
@@ -168,15 +211,26 @@ def record_move(
     )
 
 
+def _reverse_move(vault: Vault, entry: dict) -> None:
+    _move_file(vault.resolve(entry["to"]), vault.resolve(entry["from"]))
+    reverse_rewrites(
+        vault, entry["from"], entry["to"], [r["path"] for r in entry["rewrites"]]
+    )
+    indexer.rename_manifest_entry(vault.root, entry["to"], entry["from"])
+    rename_vector_cache_entry(vault, entry["to"], entry["from"])
+
+
 def undo_move(vault: Vault, note_rel: str) -> dict:
     jp = journal_path(vault)
     entries = []
     if jp.exists():
-        entries = [
-            json.loads(line)
-            for line in jp.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        for line in jp.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # torn line from a killed append; never a valid entry
     target_idx = None
     for i in range(len(entries) - 1, -1, -1):
         if entries[i]["to"] == note_rel and not entries[i].get("undone"):
@@ -191,24 +245,19 @@ def undo_move(vault: Vault, note_rel: str) -> dict:
         raise VaultError(f"Cannot undo: file no longer at {entry['to']}")
     if dst.exists():
         raise VaultError(f"Cannot undo: original location occupied: {entry['from']}")
-    _move_file(src, dst)  # rides out transient sync/AV locks
-    reverse_rewrites(
-        vault,
-        entry["from"],
-        entry["to"],
-        [r["path"] for r in entry["rewrites"]],
-    )
-    indexer.rename_manifest_entry(vault.root, entry["to"], entry["from"])
+    _reverse_move(vault, entry)  # rides out transient sync/AV locks
     entries[target_idx]["undone"] = True
-    jp.write_text(
-        "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8"
-    )
+    write_text_atomic(jp, "".join(json.dumps(e) + "\n" for e in entries))
     _ensure_note(vault)
     vault.append(
         ORGANIZER_NOTE,
         f"- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — UNDID move of "
         f"`{entry['to']}` back to `{entry['from']}`\n",
     )
+    try:  # graph mentions follow the reversed link rewrite; best effort
+        cache.rebuild(vault, indexer.db_path(vault.root))
+    except (OSError, sqlite3.Error):
+        pass  # the next sweep or index run rebuilds it
     return {"restored": entry["from"], "was": entry["to"]}
 
 
@@ -217,6 +266,8 @@ def run_sweep(
 ) -> dict:
     """max_moves caps moves per sweep (None = unlimited); confident moves past
     the cap are skipped and re-evaluated next sweep."""
+    if apply:  # fail before any move if the journal cannot be opened
+        os.close(_open_journal(vault))
     if embedder is None:
         embedder = embeddings_mod.SentenceTransformerEmbedder()
     vectors = embeddings_mod.get_note_vectors(

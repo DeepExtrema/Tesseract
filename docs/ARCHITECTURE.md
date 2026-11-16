@@ -88,9 +88,9 @@ adds the two scores:
   to zero scores on the small corpora typical of a personal vault). A term's
   contribution levels off as the word repeats in a note, and is zero for a
   note that does not contain it. The note index adds the tokens of each file
-  name to the note's term counts `corpus.TITLE_WEIGHT` (3) extra times, and to
-  its length, once per note when it is read, so a note named by the query
-  words scores above one that merely mentions them.
+  name to the note's term counts and to its length, once per note when it is
+  read, so a note is found by the words of its name. `corpus.TITLE_WEIGHT`
+  (1) is how many times they are added.
 - **Vector score.** Every candidate's embedding is compared to the query
   embedding by cosine similarity, floored at 0.
 - **Weighted sum.** Each lane is min-max normalised over the candidates, and a
@@ -241,12 +241,17 @@ the vault's top-level folders.
   every path-qualified `[[wikilink]]` that pointed at the note's old
   location (bare `[[Stem]]` links are untouched, since the organizer refuses
   to move a note if that would create a duplicate filename elsewhere in the
-  vault) and transfers its entry in the indexing manifest so the note isn't
-  needlessly re-extracted. Every move — automatic or via `undo_move` — is
+  vault) and transfers its entry in the indexing manifest and fallback
+  vector cache so the note isn't needlessly re-extracted or re-embedded.
+  Every move — automatic or via `undo_move` — is
   appended to a journal (`organizer_journal.jsonl`) and mirrored as a
   human-readable log line in `Claude/Organizer.md`; `undo_move` reads the
-  journal to restore the file, reverse the link rewrites, and mark the
-  entry undone.
+  journal to restore the file, reverse the link rewrites, mark the
+  entry undone and rebuild `graph.db`. An applying sweep checks that the
+  journal opens before moving anything, and if the append fails it moves
+  the note back and stops. Not covered: a process killed between the move
+  and the append, a rollback that itself fails, and power loss (nothing is
+  fsynced).
 - **Running it.** The organizer sweep is normally invoked by the Librarian
   caretaker loop (see §6); the standalone CLI
   `python -m tesseract_mcp.organize <vault> [--dry-run]` remains available

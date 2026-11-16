@@ -176,6 +176,16 @@ class VectorStore:
             self.rows = {rel: row for rel, row in self.rows.items() if rel in existing}
             self._write()
 
+    def rename(self, old_rel: str, new_rel: str) -> None:
+        """Re-key a moved note's row. It keeps its content hash, so an
+        unchanged note is not embedded again. No-op when the note has no row."""
+        with self._lock:
+            self._refresh(persist=False)
+            if old_rel not in self.rows:
+                return
+            self.rows[new_rel] = self.rows.pop(old_rel)
+            self._write()
+
     def _write(self) -> None:
         paths = list(self.rows)
         lens = np.array([len(self.rows[p][1]) for p in paths], dtype=np.int64)
@@ -325,6 +335,13 @@ def resolve_vectors(
             current = NoteVectors(key, snap.live, vectors, stale)
         source.current = current
         return current
+
+
+def rename_cache_entry(state_root: Path, old_rel: str, new_rel: str) -> None:
+    """Move a note's stored vector to its new path, so a moved note that did
+    not change is not embedded again. No-op when the note has no stored
+    vector."""
+    _store_for(state_root).rename(old_rel, new_rel)
 
 
 def get_note_vectors(

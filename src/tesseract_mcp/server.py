@@ -240,7 +240,8 @@ def undo_move(path: str) -> dict:
     """Reverse the organizer's most recent move of the given note (current
     vault-relative path). Restores the file, its inbound links, and the
     index manifest entry."""
-    return organizer_mod.undo_move(get_vault(), path)
+    with _caretaker():
+        return organizer_mod.undo_move(get_vault(), path)
 
 
 @mcp.tool()

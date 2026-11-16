@@ -49,6 +49,17 @@ def test_score_levels_off_as_a_word_repeats():
     assert got["many.md"] < 3 * got["once.md"]
 
 
+def test_stuffed_note_does_not_run_away_on_a_repeated_query_word():
+    corpus = {
+        "short.md": "zephyr launch notes",
+        "stuffed.md": "zephyr " * 60 + "alpha beta gamma delta " * 10,
+        "other.md": "weather patterns today",
+        "other2.md": "another unrelated page",
+    }
+    got = score(corpus, "zephyr zephyr zephyr")
+    assert got["short.md"] > got["stuffed.md"] / 3
+
+
 def test_score_empty_corpus_returns_empty():
     assert len(bm25.scores([], np.zeros(0), "anything")) == 0
 

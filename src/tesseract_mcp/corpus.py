@@ -30,9 +30,10 @@ from .vault import Vault
 
 RACY_NS = 2_000_000_000
 
-# A note's file name counts this many extra times in its term counts, so a
-# query that names a note scores it above notes that merely repeat the words.
-TITLE_WEIGHT = 3
+# A note's file name is indexed with its text: the words of the name are added
+# to the term counts this many times. 1 treats them like any other word. On
+# the private development questions 2 and 3 changed no first result.
+TITLE_WEIGHT = 1
 
 
 def file_stamp(st: os.stat_result) -> tuple[int, int, int, int]:
