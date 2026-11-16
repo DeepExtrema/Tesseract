@@ -700,7 +700,7 @@ def test_cleanup_auto_repair_env_opt_in(vault, vault_dir, monkeypatch):
 def test_cli_auto_cleanup_flag_passes_through(vault_dir, monkeypatch):
     seen = {}
 
-    def fake_sweep(vault, apply, max_moves, auto_cleanup):
+    def fake_sweep(vault, apply, max_moves, auto_cleanup, move_limit=None):
         seen["auto_cleanup"] = auto_cleanup
         return {"steps": {}, "health": {}, "errors": {}, "applied": apply}
 
@@ -723,7 +723,7 @@ def test_cli_first_apply_sweep_needs_confirmation(vault_dir, monkeypatch):
 def test_cli_first_apply_sweep_runs_when_confirmed(vault_dir, monkeypatch):
     seen = {}
 
-    def fake_sweep(vault, apply, max_moves, auto_cleanup):
+    def fake_sweep(vault, apply, max_moves, auto_cleanup, move_limit=None):
         seen["apply"] = apply
         return {"steps": {}, "health": {}, "errors": {}, "applied": apply}
 
@@ -738,7 +738,7 @@ def test_cli_later_apply_sweeps_need_no_flag(vault, vault_dir, monkeypatch):
     librarian.save_state(vault, librarian.load_state(vault))  # a sweep has run
     seen = {}
 
-    def fake_sweep(vault, apply, max_moves, auto_cleanup):
+    def fake_sweep(vault, apply, max_moves, auto_cleanup, move_limit=None):
         seen["apply"] = apply
         return {"steps": {}, "health": {}, "errors": {}, "applied": apply}
 
