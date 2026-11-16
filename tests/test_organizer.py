@@ -795,8 +795,11 @@ def test_proposal_listed_once_and_second_sweep_writes_nothing(prop_vault):
     _sweep(prop_vault, 0)
     _sweep(prop_vault, 0)  # settle: the move line from sweep 1 is in the note
     first = prop_vault.read(ORGANIZER_NOTE)
+    note_path = prop_vault.root / ORGANIZER_NOTE
+    stamp = note_path.stat().st_mtime_ns
     report = _sweep(prop_vault, 1)
     assert prop_vault.read(ORGANIZER_NOTE) == first
+    assert note_path.stat().st_mtime_ns == stamp  # not rewritten, not even identically
     pending = _section(first, "Pending")
     assert len(pending) == 1 and FUSION in pending[0]
     assert "proposed 2026-01-01" in pending[0]
@@ -805,12 +808,17 @@ def test_proposal_listed_once_and_second_sweep_writes_nothing(prop_vault):
         "pending", "2026-01-01", 1)
 
 
-def test_ticked_line_is_dismissed_and_never_reproposed(prop_vault):
+@pytest.mark.parametrize("tick", ["- [x]", "- [X]", "- [x]+✅"])
+def test_ticked_line_is_dismissed_and_never_reproposed(prop_vault, tick):
     _sweep(prop_vault, 0)
     note = prop_vault.read(ORGANIZER_NOTE)
-    prop_vault.write(ORGANIZER_NOTE,
-                     note.replace(f"- [ ] `{FUSION}`", f"- [x] `{FUSION}`"),
-                     overwrite=True)
+    box, _, suffix = tick.partition("+")
+    lines = []
+    for ln in note.splitlines():
+        if ln.startswith(f"- [ ] `{FUSION}`"):
+            ln = box + ln[5:] + (f" {suffix} 2026-01-01" if suffix else "")
+        lines.append(ln)
+    prop_vault.write(ORGANIZER_NOTE, "\n".join(lines) + "\n", overwrite=True)
     report = _sweep(prop_vault, 1)
     text = prop_vault.read(ORGANIZER_NOTE)
     assert len(_section(text, "Dismissed")) == 1
@@ -821,6 +829,51 @@ def test_ticked_line_is_dismissed_and_never_reproposed(prop_vault):
         assert FUSION not in [p["path"] for p in later["proposals"]]
         assert {"path": FUSION, "reason": "proposal dismissed"} in later["skipped"]
     assert {"path": FUSION, "reason": "proposal dismissed"} in report["skipped"]
+
+
+def test_capped_move_keeps_its_stored_proposal(prop_vault):
+    _sweep(prop_vault, 0, max_moves=0)
+    assert len(_section(prop_vault.read(ORGANIZER_NOTE), "Pending")) == 1
+    # the vote now clears the threshold, but a cap holds the move back
+    (prop_vault.root / FUSION).write_text("space orbital telemetry note\n",
+                                          encoding="utf-8")
+    report = _sweep(prop_vault, 1, max_moves=0)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert any(s["path"] == FUSION and s["reason"] == "move cap reached"
+               for s in report["skipped"])
+    assert len(_section(text, "Pending")) == 1
+    assert "proposal withdrawn" not in text
+
+
+def test_box_ticked_during_a_sweep_is_kept(prop_vault, monkeypatch):
+    from tesseract_mcp import organizer
+    _sweep(prop_vault, 0, max_moves=0)
+    real = organizer.embeddings_mod.get_note_vectors
+
+    def tick_then_embed(*a, **kw):
+        note = prop_vault.read(ORGANIZER_NOTE)
+        prop_vault.write(ORGANIZER_NOTE, note.replace(
+            f"- [ ] `{FUSION}`", f"- [x] `{FUSION}`"), overwrite=True)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(organizer.embeddings_mod, "get_note_vectors", tick_then_embed)
+    _sweep(prop_vault, 1, max_moves=0)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert len(_section(text, "Dismissed")) == 1
+    assert _section(text, "Pending") == []
+
+
+@pytest.mark.parametrize("damage", ["bad-date", "lost-end-marker"])
+def test_damaged_block_fails_before_any_move(prop_vault, damage):
+    line = (f"- [ ] `{FUSION}` → **02 - Space** (share 0.6; low confidence; "
+            f"proposed {'2026-02-30' if damage == 'bad-date' else '2026-01-01'})")
+    end = "" if damage == "lost-end-marker" else "<!-- tesseract:proposals:end -->\n"
+    prop_vault.write(ORGANIZER_NOTE, "# Organizer\n\n" + BLOCK_START
+                     + "\n#### Pending\n" + line + "\n" + end, overwrite=True)
+    before = _snapshot(prop_vault)
+    with pytest.raises(VaultError):
+        _sweep(prop_vault, 0)
+    assert _snapshot(prop_vault) == before
 
 
 def test_pending_turns_stale_at_threshold_and_logs_once(prop_vault):
@@ -922,6 +975,9 @@ def test_agent_apply_with_unchanged_proposals_writes_nothing(
         "space station recipe experiments\n", encoding="utf-8")
     budget_srv.organize_vault(apply=True)
     first = org_vault.read(ORGANIZER_NOTE)
+    note_path = org_vault.root / ORGANIZER_NOTE
+    stamp = note_path.stat().st_mtime_ns
     result = budget_srv.organize_vault(apply=True)
     assert result["moved"] == []
     assert org_vault.read(ORGANIZER_NOTE) == first
+    assert note_path.stat().st_mtime_ns == stamp

@@ -63,7 +63,7 @@ _SECTIONS = (
 _LINE_RE = re.compile(
     r"^- \[([ xX])\] `(.+?)` → \*\*(.+?)\*\* "
     r"\(share ([0-9.]+); (.*); proposed (\d{4}-\d{2}-\d{2})"
-    r"(?:; stale since (\d{4}-\d{2}-\d{2}))?\)\s*$"
+    r"(?:; stale since (\d{4}-\d{2}-\d{2}))?\)(?:\s.*)?$"  # Tasks may append " ✅ date"
 )
 
 
@@ -337,6 +337,14 @@ def parse_proposal_block(block: str) -> list[dict]:
         if state is None or not m:
             continue
         box, path, suggested, share, reason, proposed, stale = m.groups()
+        for d in (proposed, stale):
+            try:
+                if d:
+                    date.fromisoformat(d)
+            except ValueError:
+                raise VaultError(
+                    f"{ORGANIZER_NOTE}: bad date {d!r} in proposal line "
+                    f"`{path}`; fix it by hand") from None
         entries.append({
             "path": path, "suggested": suggested, "share": float(share),
             "reason": reason, "proposed": proposed, "stale_since": stale,
@@ -386,8 +394,10 @@ def stale_proposals(vault: Vault, today: date | None = None) -> list[dict]:
 
 
 def _advance(vault: Vault, stored: list[dict], proposed: list[dict],
-             today: date) -> tuple[list[dict], list[str]]:
-    """Next block entries and log lines for one sweep's fresh proposals."""
+             today: date, held: frozenset = frozenset(),
+             ) -> tuple[list[dict], list[str]]:
+    """Next block entries and log lines for one sweep's fresh proposals.
+    `held` = (path, folder) pairs a move cap deferred: still proposed."""
     iso = today.isoformat()
     current = {(p["path"], p["suggested"]): p for p in proposed}
     out: list[dict] = []
@@ -413,7 +423,7 @@ def _advance(vault: Vault, stored: list[dict], proposed: list[dict],
             if not (vault.root / e["path"]).is_file():
                 leave(e)
                 continue
-        elif key not in current:
+        elif key not in current and key not in held:
             leave(e)
             continue
         elif e["state"] == "pending" and _age(e["proposed"], today) >= PROPOSAL_STALE_DAYS:
@@ -503,7 +513,8 @@ def run_sweep(
             })
             continue
         if max_moves is not None and len(moved) >= max_moves:
-            skipped.append({"path": rel, "reason": "move cap reached"})
+            skipped.append({"path": rel, "reason": "move cap reached",
+                            "suggested": cls.folder})
             continue
         stem_name = rel.rsplit("/", 1)[-1]
         target_rel = f"{cls.folder}/{stem_name}"
@@ -543,6 +554,8 @@ def run_sweep(
     if apply and moved:
         cache.rebuild(vault, indexer.db_path(vault.root))
         cache_rebuilt = True
+    if apply:  # re-read: keep a box the owner ticked while this sweep ran
+        _, stored = _read_proposals(vault)
     dismissed = {(e["path"], e["suggested"]) for e in stored
                  if e["state"] == "dismissed" or e["ticked"]}
     open_now = []
@@ -552,7 +565,9 @@ def run_sweep(
         else:
             open_now.append(p)
     proposals = open_now
-    entries, log = _advance(vault, stored, proposals, today)
+    held = frozenset((s["path"], s["suggested"]) for s in skipped
+                     if s["reason"] == "move cap reached")
+    entries, log = _advance(vault, stored, proposals, today, held)
     by_key = {(e["path"], e["suggested"]): e for e in entries}
     for p in proposals:
         e = by_key[(p["path"], p["suggested"])]

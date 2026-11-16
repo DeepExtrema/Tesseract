@@ -234,9 +234,11 @@ the vault's top-level folders.
   `state`, `proposed`, `age_days` per proposal; `stale_proposals` appears in
   Librarian health, `librarian_status` and the digest's `proposals` section,
   all read from the synced block so any machine sees the same items.
-  Older `### Proposals {date}` sections stay untouched. Not covered: a cap on
-  open proposals, and a move capped by the move budget reads as "no longer
-  proposed" and is logged withdrawn.
+  Older `### Proposals {date}` sections stay untouched. A stored pair whose
+  move a cap holds back stays in the block. A box ticked while a sweep runs
+  is kept (the block is re-read after the moves). Text a human adds inside
+  the block is dropped on the next rewrite. Not covered: a cap on open
+  proposals.
 - **Safe moves.** Applying a move is delegated to `mover.py`, which rewrites
   every path-qualified `[[wikilink]]` that pointed at the note's old
   location (bare `[[Stem]]` links are untouched, since the organizer refuses
