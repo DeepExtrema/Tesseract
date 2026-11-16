@@ -239,8 +239,8 @@ the vault's top-level folders.
   `moves_today` counts every journal entry whose local-date `ts` is today,
   undone ones included, whoever made the move; no new state exists. The
   budget is per machine (the journal is) and shared with other moves
-  journaled that day. Dry-runs are not capped; the CLI and the Librarian are
-  unaffected. An apply call that moves nothing still appends its proposals
+  journaled that day. Dry-runs are not capped; the CLI is unaffected. The Librarian has its
+  own limits (§6) and does not use this budget. An apply call that moves nothing still appends its proposals
   to `Claude/Organizer.md`, as every apply sweep does.
 - **Running it.** The organizer sweep is normally invoked by the Librarian
   caretaker loop (see §6); the standalone CLI
@@ -263,6 +263,14 @@ sequence and records what happened.
   records an error, leaves that step's slot as `None`, and lets later steps
   continue. The CLI exits non-zero when any step failed, so a scheduler can
   alert on a bad run.
+- **Move limits.** The sweep files at most `--max-moves` notes per run
+  (default 10) and `--max-moves-per-day` per day (default 20); both accept
+  `unlimited`. This changed the default from unlimited. The organizer gets
+  `min(per-run, max(0, per-day - organizer.moves_today))`, so the day count
+  includes undone moves and moves by any maker. Dry-runs use the same
+  limit. Candidates skipped with "move cap reached" are counted in the
+  report and `Claude/Librarian.md`, naming the binding limit and the flag
+  that raises it. Shipped schedules pass no flags and get the defaults.
 - **Index drain.** The index step loops `indexer.run` until nothing remains
   (bounded at 40 rounds), so a single sweep can drain a backlog of
   changed notes without a separate indexer schedule.

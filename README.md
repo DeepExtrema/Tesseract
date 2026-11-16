@@ -329,7 +329,7 @@ These run outside the MCP server and are never exposed as tools.
 
 | Command | What it does |
 |---|---|
-| `python -m tesseract_mcp.librarian <vault> [--dry-run]` | The scheduled caretaker sweep |
+| `python -m tesseract_mcp.librarian <vault> [--dry-run] [--max-moves N\|unlimited] [--max-moves-per-day N\|unlimited]` | The scheduled caretaker sweep. **Default changed:** organizer moves are now capped at 10 per run and 20 per day (previously unlimited) |
 | `python -m tesseract_mcp.indexer <vault> [--rebuild-only]` | Index directly, or rebuild `graph.db` from the markdown |
 | `python -m tesseract_mcp.organize <vault> [--dry-run]` | Run only the filing sweep |
 | `python -m tesseract_mcp.cleanup <vault> [--apply-repairs [--force]] [--apply-retirements]` | Report deleted notes and orphaned entities; apply the mechanical repairs or retire the orphans on request |
@@ -342,6 +342,8 @@ These run outside the MCP server and are never exposed as tools.
 | `python -m tesseract_mcp.evals` | Run the retrieval benchmark |
 
 ### Scheduled maintenance
+
+The shipped schedules (`scripts/librarian-task.cmd`, the launchd plist template, `scripts/index-nightly.sh`) pass no move flags, so they get the new defaults: at most 10 organizer moves per run and 20 per day. Held-back candidates are counted in the run report and `Claude/Librarian.md` and re-evaluated next sweep; edit the schedule to add `--max-moves` / `--max-moves-per-day` (`N` or `unlimited`) to change that.
 
 > **First Librarian run on a real vault: use `--dry-run`** and review the
 > report before scheduling unattended runs. Dry-run writes no state, moves,
@@ -426,7 +428,8 @@ extraction on, because unattended sweeps read clipped web content.
 | Knob | Effect |
 |---|---|
 | `librarian --auto-cleanup` or `TESSERACT_AUTO_CLEANUP=1` | The sweep applies the mechanical graph repairs itself instead of reporting them |
-| `librarian --max-moves N` | Caps organizer moves per sweep; confident moves past the cap are skipped and re-evaluated next sweep (`0` = file nothing) |
+| `librarian --max-moves N\|unlimited` | Caps organizer moves per sweep; default **10** (was unlimited). Confident moves past the cap are skipped, reported as held back, and re-evaluated next sweep (`0` = file nothing) |
+| `librarian --max-moves-per-day N\|unlimited` | Caps organizer moves per day, default **20**. Counts every move journaled today on this machine, undone and agent-made included; the sweep moves at most `min(per-run, per-day minus moves today)` |
 | `TESSERACT_AGENT_NAME=<name>` | Identity stamped on notes this server instance creates (`agent:` frontmatter, concept update headings). Default `claude`. Run one instance per agent so every contribution is attributable |
 | `TESSERACT_READONLY=1` | MCP server registers only read tools; `log_session`, `capture`, `upsert_concept`, `write_note`, `add_task`, `sheet_upsert`, `index_brain`, `consolidate_graph`, `organize_vault`, `undo_move` are absent |
 | `TESSERACT_NO_TOOL_APPLY=1` | Keeps the note-writing tools but refuses `organize_vault(apply=True)`, `consolidate_graph(apply=True)` and `index_brain(force=True)`, so only the scheduled sweep or a human at the CLI can move notes, merge entities or re-extract the whole vault |

@@ -401,6 +401,12 @@ def format_report(result: dict, now: datetime) -> str:
         lines.append(f"- organize: moved {len(org['moved'])}, "
                      f"proposals {len(org['proposals'])}, "
                      f"skipped {len(org['skipped'])}\n")
+        ml = result.get("move_limit")
+        if ml:
+            lines.append(
+                f"- organize: {ml['held_back']} candidate moves held back by "
+                f"the {ml['limit']} limit ({ml['max_moves']}); raise it with "
+                f"`{ml['flag']} N` or `{ml['flag']} unlimited`\n")
 
     cch = steps.get("cache")
     if cch is None:
@@ -492,6 +498,28 @@ def write_report(vault: Vault, section: str) -> None:
     vault.write(LIBRARIAN_NOTE, text, overwrite=True)
 
 
+DEFAULT_MAX_MOVES = 10
+DEFAULT_MAX_MOVES_PER_DAY = 20
+_MOVE_CAP_REASON = "move cap reached"
+_LIMIT_FLAGS = {"per-run": "--max-moves", "per-day": "--max-moves-per-day"}
+
+
+def resolve_move_limit(
+    vault: Vault, per_run: int | None, per_day: int | None,
+) -> tuple[int | None, str | None]:
+    """(max_moves for the sweep, binding limit name). None = unbounded.
+
+    The day allowance is per_day minus every move journaled today (undone
+    and other makers' included, as organizer.moves_today counts)."""
+    allowance = (None if per_day is None
+                 else max(0, per_day - organizer_mod.moves_today(vault)))
+    if allowance is None:
+        return per_run, ("per-run" if per_run is not None else None)
+    if per_run is None or allowance < per_run:
+        return allowance, "per-day"
+    return per_run, "per-run"
+
+
 def run_sweep(
     vault: Vault,
     extractor=None,
@@ -501,8 +529,11 @@ def run_sweep(
     max_moves: int | None = None,
     now: datetime | None = None,
     auto_cleanup: bool | None = None,
+    move_limit: str | None = None,
 ) -> dict:
-    """auto_cleanup None = read TESSERACT_AUTO_CLEANUP (default off)."""
+    """auto_cleanup None = read TESSERACT_AUTO_CLEANUP (default off).
+    move_limit names which limit ('per-run'/'per-day') produced max_moves,
+    so the report can say what held moves back."""
     now = now or datetime.now()
     if auto_cleanup is None:
         auto_cleanup = auto_cleanup_enabled()
@@ -521,6 +552,14 @@ def run_sweep(
     _step(result, "organize",
           lambda: organizer_mod.run_sweep(vault, embedder, apply=apply,
                                           max_moves=max_moves))
+
+    org = result["steps"].get("organize")
+    if org is not None and move_limit in _LIMIT_FLAGS:
+        held = sum(1 for e in org["skipped"] if e["reason"] == _MOVE_CAP_REASON)
+        if held:
+            result["move_limit"] = {
+                "held_back": held, "limit": move_limit,
+                "max_moves": max_moves, "flag": _LIMIT_FLAGS[move_limit]}
 
     _step(result, "cache", lambda: _ensure_cache(vault, result))
 
@@ -546,6 +585,19 @@ def run_sweep(
     return result
 
 
+def _limit(value: str) -> int | None:
+    if value.lower() == "unlimited":
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not an integer or 'unlimited'") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return n
+
+
 def main() -> None:
     # Windows consoles (and files a scheduled sweep redirects stdout into)
     # default to cp1252, which can't encode the ✓/⚠ glyphs in
@@ -561,8 +613,16 @@ def main() -> None:
     parser.add_argument("vault", help="Path to the Obsidian vault root")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report without writing anything")
-    parser.add_argument("--max-moves", type=int, default=None, metavar="N",
-                        help="Cap organizer moves per sweep (default: unlimited)")
+    parser.add_argument("--max-moves", type=_limit, default=DEFAULT_MAX_MOVES,
+                        metavar="N|unlimited",
+                        help="Cap organizer moves per sweep (default: "
+                             f"{DEFAULT_MAX_MOVES}; was unlimited before; "
+                             "'unlimited' removes the cap)")
+    parser.add_argument("--max-moves-per-day", type=_limit,
+                        default=DEFAULT_MAX_MOVES_PER_DAY, metavar="N|unlimited",
+                        help="Cap organizer moves per day, counting every move "
+                             "journaled today incl. undone ones (default: "
+                             f"{DEFAULT_MAX_MOVES_PER_DAY}; 'unlimited' removes the cap)")
     parser.add_argument("--auto-cleanup", action="store_true",
                         help="apply mechanical graph repairs during the sweep "
                              "(default: report them; also TESSERACT_AUTO_CLEANUP=1)")
@@ -570,8 +630,6 @@ def main() -> None:
                         help="allow the first applying sweep on a vault that "
                              "has never had one (run --dry-run and review it first)")
     args = parser.parse_args()
-    if args.max_moves is not None and args.max_moves < 0:
-        parser.error("--max-moves must be >= 0")
     vault = Vault(args.vault)
     if (not args.dry_run and not args.confirm_first_run
             and not state_path(vault).exists()):
@@ -585,8 +643,10 @@ def main() -> None:
     lock = (nullcontext() if args.dry_run
             else caretaker_lock(indexer.state_dir(vault.root)))
     with lock:
+        max_moves, move_limit = resolve_move_limit(
+            vault, args.max_moves, args.max_moves_per_day)
         result = run_sweep(vault, apply=not args.dry_run,
-                           max_moves=args.max_moves,
+                           max_moves=max_moves, move_limit=move_limit,
                            auto_cleanup=True if args.auto_cleanup else None)
     if args.dry_run:
         print(format_report(result, datetime.now()))
