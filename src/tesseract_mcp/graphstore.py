@@ -109,7 +109,7 @@ def merge_aliases(vault: Vault, rel: str, candidates: list[str]) -> bool:
     added = [a for a in candidates if a and a.casefold() not in known]
     if not added:
         return False
-    end = text.find("\n---", 3)
+    end = text.find("\n---", 3) if text.startswith("---") else -1
     if end == -1:
         return False
     meta["aliases"] = current + added

@@ -1,7 +1,7 @@
 import yaml
 
 from tesseract_mcp.extractor import Extraction
-from tesseract_mcp.graphstore import GRAPH_ROOT, GraphStore, entity_rel_path
+from tesseract_mcp.graphstore import GRAPH_ROOT, GraphStore, entity_rel_path, merge_aliases
 from tesseract_mcp.search import parse_frontmatter
 
 ACME = {"name": "Acme Corp", "type": "organization", "aliases": ["ACME"], "summary": "A company."}
@@ -182,3 +182,32 @@ def test_upsert_revives_retired_entity(vault):
     assert "retired" not in revived_meta
     assert set(revived_meta["aliases"]) == {"Acme Corp", "ACME Inc"}
     assert "Back again." in revived and "## Mentions" in revived
+
+
+BODY_WITH_RULE = "Rust is a language.\nImportant paragraph above the rule.\n\n---\n\nText below the rule.\n"
+
+
+def test_merge_aliases_no_frontmatter_rule_does_not_drop_body(vault):
+    rel = "Claude/Graph/Domains/Rust.md"
+    vault.write(rel, BODY_WITH_RULE)
+    assert merge_aliases(vault, rel, ["Rustlang"]) is False
+    assert vault.read(rel) == BODY_WITH_RULE
+
+
+def test_merge_aliases_frontmatter_note_merges_and_keeps_body(vault):
+    rel = "Claude/Graph/Domains/Rust.md"
+    vault.write(rel, "---\nentity: domain\naliases: [Rs]\n---\n\n# Rust\n\nBody.\n")
+    assert merge_aliases(vault, rel, ["Rustlang", "rs"]) is True
+    text = vault.read(rel)
+    assert parse_frontmatter(text)["aliases"] == ["Rs", "Rustlang"]
+    assert "# Rust" in text and "Body." in text
+
+
+def test_merge_aliases_frontmatter_note_with_rule_in_body(vault):
+    rel = "Claude/Graph/Domains/Rust.md"
+    vault.write(rel, "---\nentity: domain\n---\n\n" + BODY_WITH_RULE)
+    assert merge_aliases(vault, rel, ["Rustlang"]) is True
+    text = vault.read(rel)
+    assert parse_frontmatter(text)["aliases"] == ["Rustlang"]
+    for line in BODY_WITH_RULE.splitlines():
+        assert line in text.splitlines()
