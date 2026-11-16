@@ -30,7 +30,7 @@ from .mover import (
     reverse_rewrites,
 )
 from .search import parse_frontmatter
-from .vault import Vault, VaultError, _write_all, write_text_atomic
+from .vault import Vault, VaultError, _retry_locked, _write_all, write_text_atomic
 
 EXCLUDED_DIRS = frozenset({
     "Claude", "00 - Maps of Content", ".obsidian", ".smart-env",
@@ -150,18 +150,25 @@ def _ensure_note(vault: Vault) -> None:
 
 def _open_journal(vault: Vault) -> int:
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | platforms.current.O_BINARY
-    return os.open(journal_path(vault), flags, 0o666)
+    return _retry_locked(lambda: os.open(journal_path(vault), flags, 0o666))
 
 
 def _append_journal(vault: Vault, entry: dict) -> None:
     """One raw write per entry. A failed write is truncated away (best
-    effort) so a torn line does not poison undo's line-by-line parse; a
-    failed truncate or a process killed mid-write can still leave one."""
+    effort); if a killed process left a torn last line anyway, the new entry
+    starts on a fresh line and undo skips the torn one."""
+    data = (json.dumps(entry) + "\n").encode("utf-8")
+    jp = journal_path(vault)
+    if jp.is_file() and jp.stat().st_size:
+        with jp.open("rb") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                data = b"\n" + data
     fd = _open_journal(vault)
     try:
         size = os.fstat(fd).st_size
         try:
-            _write_all(fd, (json.dumps(entry) + "\n").encode("utf-8"))
+            _write_all(fd, data)
         except BaseException:
             try:
                 os.ftruncate(fd, size)
@@ -186,11 +193,14 @@ def record_move(
     }
     try:
         _append_journal(vault, entry)
-    except BaseException:
+    except BaseException as e:
         # an unjournaled move can never be undone: put everything back.
         # Not covered: a kill between move_note and this append, or a
         # rollback that itself fails, leaves the move unjournaled.
-        _reverse_move(vault, entry)
+        try:
+            _reverse_move(vault, entry)
+        except BaseException as rollback_error:
+            e.add_note(f"rollback also failed: {rollback_error!r}")
         raise
     _ensure_note(vault)
     stem = record["to"].rsplit("/", 1)[-1][:-3]
@@ -214,11 +224,13 @@ def undo_move(vault: Vault, note_rel: str) -> dict:
     jp = journal_path(vault)
     entries = []
     if jp.exists():
-        entries = [
-            json.loads(line)
-            for line in jp.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        for line in jp.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # torn line from a killed append; never a valid entry
     target_idx = None
     for i in range(len(entries) - 1, -1, -1):
         if entries[i]["to"] == note_rel and not entries[i].get("undone"):

@@ -119,6 +119,9 @@ def move_note(vault: Vault, old_rel: str, new_rel: str, protect=None) -> dict:
             target = dst if p == src else p  # a self-link travels with the note
             _write_bytes(target, rewritten)
             written.append((target, original))
+        # inside the rollback: a failed manifest save must not leave a moved
+        # note that record_move never journals
+        indexer.rename_manifest_entry(vault.root, old_rel, new_rel)
     except BaseException:
         for target, original in reversed(written):
             try:
@@ -130,7 +133,6 @@ def move_note(vault: Vault, old_rel: str, new_rel: str, protect=None) -> dict:
         except OSError:
             pass
         raise
-    indexer.rename_manifest_entry(vault.root, old_rel, new_rel)
     rename_vector_cache_entry(vault, old_rel, new_rel)
     return {"from": old_rel, "to": new_rel,
             "rewrites": [{"path": rel, "count": count}

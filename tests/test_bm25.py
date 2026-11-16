@@ -45,7 +45,7 @@ def _score(corpus, query, path):
 
 
 def test_repeated_term_saturates():
-    # Identical length: only the term frequency differs. The contribution is
+    # Same filler in every version: only the term frequency differs. The contribution is
     # bounded by idf*(k1+1), so going 5 -> 50 occurrences barely moves it.
     def note(n):
         return " ".join(["zephyr"] * n + FILLER.split() * 10)

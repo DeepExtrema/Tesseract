@@ -364,6 +364,7 @@ def test_server_undo_refused_while_sweep_holds_caretaker_lock(
     finally:
         release.set()
         t.join(15)
+    assert not t.is_alive()
     assert not errors, errors
 
     result = server.undo_move("02 - Space/SmallSat Renamed.md")
@@ -453,8 +454,30 @@ def test_sweep_journal_append_failure_leaves_no_unjournaled_move(
 def test_sweep_unwritable_journal_moves_nothing(org_vault):
     journal_path(org_vault).mkdir(parents=True)  # cannot be opened for append
     before = _snapshot(org_vault)
+    emb = CountingEmbedder()
     with pytest.raises(OSError):
-        run_sweep(org_vault, ClusterEmbedder(), apply=True)
+        run_sweep(org_vault, emb, apply=True)
+    assert _snapshot(org_vault) == before
+    assert emb.embedded == []  # refused before any work, not rolled back after
+
+
+def test_torn_journal_line_does_not_block_undo(org_vault):
+    record = move_note(org_vault, LOOSE, FILED)
+    record_move(org_vault, record, share=0.9, neighbors=[])
+    with journal_path(org_vault).open("ab") as f:
+        f.write(b'{"ts": "2026-11-16 02:00:00", "from": "x.md", "to')  # killed mid-append
+    record = move_note(org_vault, "02 - Space/SmallSat.md", "SmallSat.md")
+    record_move(org_vault, record, share=0.9, neighbors=[])
+    assert undo_move(org_vault, "SmallSat.md")["restored"] == "02 - Space/SmallSat.md"
+    assert undo_move(org_vault, FILED)["restored"] == LOOSE
+
+
+def test_move_with_unsavable_manifest_is_rolled_back(org_vault):
+    _linking_vault(org_vault)
+    before = _snapshot(org_vault)
+    indexer._manifest_path(org_vault.root).write_text("{not json", encoding="utf-8")
+    with pytest.raises(Exception):
+        move_note(org_vault, LOOSE, FILED)
     assert _snapshot(org_vault) == before
 
 
@@ -469,10 +492,8 @@ def test_sweep_note_append_failure_keeps_move_undoable(org_vault, monkeypatch):
             raise OSError("note locked")
         real(fd, data)
     monkeypatch.setattr(vault_mod, "_write_all", flaky)
-    try:
+    with pytest.raises(OSError, match="note locked"):
         run_sweep(org_vault, ClusterEmbedder(), apply=True)
-    except OSError:
-        pass
     entries = [json.loads(l) for l in
                journal_path(org_vault).read_text(encoding="utf-8").splitlines()]
     assert entries and _snapshot(org_vault) != before
