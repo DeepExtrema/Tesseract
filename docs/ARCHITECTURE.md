@@ -16,7 +16,7 @@ flowchart TB
         server[server.py — 21 tools]
     end
     subgraph "Retrieval"
-        hybrid[hybrid.py — RRF fusion]
+        hybrid[hybrid.py — weighted sum]
         bm25[bm25.py]
         emb[embeddings.py]
         sca[sc_adapter.py — Smart Connections reader]
@@ -71,49 +71,71 @@ directories.
 ## 2. The retrieval pipeline
 
 `search_brain` and `context_bundle` both go through `hybrid.hybrid_search`,
-which runs three independent ranking passes over the same candidate set and
-fuses them:
+which scores every candidate note on a keyword lane and a vector lane and
+adds the two scores:
 
-- **Candidate set.** `search.iter_candidate_notes` walks the vault, applies
-  the optional tag/folder filters, and skips `.obsidian`, `.trash`, and
-  `.git` (`search.SKIP_DIRS`). Every ranking pass below only ever sees this
-  filtered set.
-- **BM25 ranking.** `bm25.rank` tokenizes with a simple `[a-z0-9]+` regex
-  and scores the candidates with `rank_bm25`'s `BM25L` variant (chosen over
-  the more common `BM25Okapi` because Okapi's IDF term collapses to zero
-  scores on the small corpora typical of a personal vault). The top 50
-  positively-scored notes become the BM25-ranked list.
-- **Vector ranking.** Every candidate's embedding is compared to the query
-  embedding by cosine similarity; the top 50 with positive similarity form
-  the vector-ranked list.
-- **Fusion.** The two ranked lists are merged with Reciprocal Rank Fusion
-  (`hybrid.rrf_fuse`, `k=60`). RRF combines lists by rank position rather
-  than raw score, so BM25 scores and cosine similarities — two numbers on
-  completely different scales — never need to be normalized against each
-  other before they can be compared.
-- **Substring fallback — only when BM25 is empty.** BM25 tokenizes on
-  `[a-z0-9]+`, so a query that's a single character or pure punctuation
-  never token-matches anything and BM25 returns an empty list. Only in that
-  case does a third, alphabetically-ordered substring-match list join the
-  fusion. The code comment explains why this is gated rather than always
-  included: *"When BM25 has results, the alphabetically-ordered substring
-  list would just pollute the fusion."* Substring matching is a fallback
-  signal for degenerate queries, not a fourth ranking strategy competing
-  with BM25 and vectors on equal footing.
+- **Candidate set.** `search.iter_candidate_notes` reads the in-process note
+  index (`corpus.py`), which each search brings up to date with one `stat` per
+  file and re-reads only the notes that changed. It applies the optional
+  tag/folder filters, and skips every dot-entry — `.obsidian`,
+  `.trash`, `.git` and anything else hidden (`search.is_skipped`, shared with
+  the indexer, embeddings, tasks, sheets, the graph and the mover). Every
+  scoring step below only ever sees this filtered set, and scores all of it:
+  there is no per-lane depth cut.
+- **Keyword score.** `bm25.scores` tokenizes with a simple `[a-z0-9]+` regex
+  and scores the candidates with the `BM25L` variant, computed with numpy
+  (chosen over the more common `BM25Okapi` because Okapi's IDF term collapses
+  to zero scores on the small corpora typical of a personal vault). A term's
+  contribution levels off as the word repeats in a note, and is zero for a
+  note that does not contain it. The note index adds the tokens of each file
+  name to the note's term counts and to its length, once per note when it is
+  read, so a note is found by the words of its name. `corpus.TITLE_WEIGHT`
+  (1) is how many times they are added.
+- **Vector score.** Every candidate's embedding is compared to the query
+  embedding by cosine similarity, floored at 0.
+- **Weighted sum.** Each lane is min-max normalised over the candidates, and a
+  note's score is `KEYWORD_SHARE * keyword + (1 - KEYWORD_SHARE) * vector`
+  (`hybrid.KEYWORD_SHARE`, 0.5). Normalising puts BM25 scores and cosine
+  similarities, two numbers on different scales, on one scale before they are
+  added. A lane whose values are all equal has no spread to normalise: all
+  zeros if the value is 0, all ones otherwise, so a search scoped to a single
+  note still returns it. Only notes with a score above 0 are returned.
+- **Substring fallback — only when no candidate has a keyword score.** The
+  tokenizer splits on `[a-z0-9]+`, so a query that's a single character or
+  pure punctuation never token-matches anything. Only in that case does
+  substring matching take the keyword lane's place: a note whose name or any
+  line contains the query gets a keyword score of 1, every other note 0.
+- **Entity notes are weighted (`prefer_source`, default on).** The score of a
+  derived `Claude/Graph` entity note is multiplied by
+  `hybrid.DERIVED_WEIGHT` (0.5). On a mature vault entity notes outnumber the
+  notes they were extracted from, and being short and name-dense they would
+  take most of the unscoped top-10 slots and crowd out the sources that
+  actually answer the query; the weight lets a clearly better entity note
+  still win. A search scoped to `Claude/Graph` ranks the same notes in the
+  same order, since every score is scaled alike. `prefer_source=false` leaves
+  the weight at 1.
+- **A note named by the query goes first.** A note whose own name (file name
+  without `.md`) or alias *is* the query is placed ahead of every other
+  result. The comparison is token equality, not containment: "who is Alice
+  Zhang" is a question about her, and the notes that answer it are the
+  sources, while "Alice Zhang" asks for her entity note. Notes sharing the
+  name are ordered source first when `prefer_source` is on, otherwise by
+  score. The name lookup is part of the index snapshot (`Snapshot.named`),
+  built when the index changes, not per query.
 - **Vector source.** Vectors come from Obsidian's Smart Connections plugin
   (`sc_adapter.py`) when its cached embedding for a note is fresh — i.e.
   computed after the note's last edit. When Smart Connections' embedding is
   stale or absent, `embeddings.py` falls back to a local
   `sentence-transformers` model, `TaylorAI/bge-micro-v2`, and caches the
-  result (keyed by content hash) in `fallback_embeddings.json` next to the
+  result (keyed by note path, valid while the content hash matches) in `note_vectors.npz` next to the
   rest of this vault's state. That fallback model is not an arbitrary
   choice: it's pinned to be *identical* to what Smart Connections uses,
   because embedding vectors from two different models live in unrelated
   vector spaces — mixing them into one similarity ranking would silently
   corrupt it.
 - **Indexing keeps the cache warm; search isn't fully exempt.**
-  `indexer.run` calls the same `embeddings.get_note_vectors` function that
-  `hybrid_search` calls, right after each incremental indexing pass — so
+  `indexer.run` resolves vectors through the same `embeddings` code that
+  `hybrid_search` uses, right after each incremental indexing pass — so
   immediately after an `index_brain` run, every note's vector is already
   cached and a search usually just reads it back. But `get_note_vectors` is
   not purely read-only: for any note edited *since* the last indexing pass
@@ -219,12 +241,17 @@ the vault's top-level folders.
   every path-qualified `[[wikilink]]` that pointed at the note's old
   location (bare `[[Stem]]` links are untouched, since the organizer refuses
   to move a note if that would create a duplicate filename elsewhere in the
-  vault) and transfers its entry in the indexing manifest so the note isn't
-  needlessly re-extracted. Every move — automatic or via `undo_move` — is
+  vault) and transfers its entry in the indexing manifest and fallback
+  vector cache so the note isn't needlessly re-extracted or re-embedded.
+  Every move — automatic or via `undo_move` — is
   appended to a journal (`organizer_journal.jsonl`) and mirrored as a
   human-readable log line in `Claude/Organizer.md`; `undo_move` reads the
-  journal to restore the file, reverse the link rewrites, and mark the
-  entry undone.
+  journal to restore the file, reverse the link rewrites, mark the
+  entry undone and rebuild `graph.db`. An applying sweep checks that the
+  journal opens before moving anything, and if the append fails it moves
+  the note back and stops. Not covered: a process killed between the move
+  and the append, a rollback that itself fails, and power loss (nothing is
+  fsynced).
 - **Running it.** The organizer sweep is normally invoked by the Librarian
   caretaker loop (see §6); the standalone CLI
   `python -m tesseract_mcp.organize <vault> [--dry-run]` remains available
@@ -276,9 +303,9 @@ sequence and records what happened.
 
 The vault's markdown is the single source of truth for everything: notes,
 entity graph, tasks, the organizer's log. Every other file the server
-produces — the BM25-adjacent search index (rebuilt fresh per query, not
-persisted at all), the fallback embedding cache, and the `graph.db` SQLite
-mirror — lives under `~/.tesseract-mcp/` and is derived, disposable state.
+produces — the in-memory search index (built from the files by the first
+search of a server process, never persisted), the fallback embedding cache,
+and the `graph.db` SQLite mirror — lives under `~/.tesseract-mcp/` and is derived, disposable state.
 Delete that entire directory and running `index_brain` (or
 `python -m tesseract_mcp.indexer <vault> --rebuild-only`) rebuilds it from the
 markdown alone; nothing is lost.
@@ -296,7 +323,7 @@ for how to stand it up.
 
 | Module | Responsibility |
 |---|---|
-| `bm25.py` | In-memory BM25 keyword ranking over vault notes, rebuilt fresh per query rather than persisted. |
+| `bm25.py` | In-memory BM25L keyword scoring over per-note term counts held by the note index. |
 | `cache.py` | Derived SQLite cache over the `Claude/Graph` markdown, rebuildable anytime. |
 | `consolidate.py` | LLM-driven consolidation of duplicate graph entities. |
 | `conventions.py` | Installs the `Claude/` conventions tree (constitution, seed notes, root guides) into a vault; idempotent. |
@@ -305,7 +332,7 @@ for how to stand it up.
 | `extractor.py` | LLM entity extraction via pluggable CLI backends (`codex` / `claude`). |
 | `graph.py` | Vault metadata queries: frontmatter filtering, wikilink backlinks, recent files. |
 | `graphstore.py` | Markdown-native graph store: reads and writes entity notes under `Claude/Graph/`. |
-| `hybrid.py` | Hybrid retrieval: BM25 keyword ranking + vector similarity, fused via Reciprocal Rank Fusion. |
+| `hybrid.py` | Hybrid retrieval: BM25 keyword score + vector similarity, min-max normalised and added as a weighted sum; entity notes weighted down, a note named by the query first. |
 | `indexer.py` | Incremental vault indexing: hash-diff manifest → extract → store → cache. |
 | `librarian.py` | Caretaker sweep: orchestrates index → organize → cache → throttled consolidation proposals → health checks; reports to `Claude/Librarian.md`. |
 | `mcp_sync.py` | Curated MCP server manifest sync — additive registration into Claude Code user scope. |

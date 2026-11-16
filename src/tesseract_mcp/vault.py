@@ -57,6 +57,19 @@ def _discard(tmp: Path) -> None:
         pass
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Replace `path` with `text` via a same-directory temp file + os.replace,
+    so a failed write leaves the previous complete file in place. The temp
+    file is removed on any failure. No fsync: this guards against torn writes
+    from errors/crashes of this process, not power loss."""
+    tmp = path.with_name(f".{secrets.token_hex(8)}.tmp-write")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        _retry_locked(lambda: os.replace(tmp, path))
+    finally:
+        _discard(tmp)
+
+
 def _write_all(fd: int, data: bytes) -> None:
     # os.write may write less than asked (signals, pipes); loop until done.
     view = memoryview(data)

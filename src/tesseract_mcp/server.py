@@ -107,14 +107,21 @@ def search_brain(
     tags: list[str] | None = None,
     folder: str | None = None,
     limit: int = 20,
+    prefer_source: bool = True,
 ) -> list[dict]:
     """Hybrid full-text + semantic search across the whole vault (BM25 +
     vector similarity, fused). Optionally filter by frontmatter tags or
-    restrict to a subfolder. Returns path + excerpt, ranked by relevance."""
+    restrict to a subfolder. Returns path + excerpt, ranked by relevance.
+
+    Source notes rank above derived Claude/Graph entity notes by default:
+    entity notes can outnumber sources and otherwise take most of
+    the top slots. An entity note still leads when the query is its exact
+    name or alias. Pass prefer_source=false to rank both kinds together."""
     vault = get_vault()
     hits = hybrid.hybrid_search(
         vault, indexer.state_dir(vault.root), _get_embedder(),
         query, tags=tags, folder=folder, limit=limit,
+        prefer_source=prefer_source,
     )
     return [{"path": h.path, "excerpt": h.excerpt} for h in hits]
 
@@ -231,9 +238,10 @@ def sheet_schema(sheet: str | None = None) -> dict:
 @_write_tool
 def undo_move(path: str) -> dict:
     """Reverse the organizer's most recent move of the given note (current
-    vault-relative path). Restores the file, its inbound links, and the
-    index manifest entry."""
-    return organizer_mod.undo_move(get_vault(), path)
+    vault-relative path). Restores the file, its inbound links, the index
+    manifest entry and its stored vector, then rebuilds graph.db."""
+    with _caretaker():
+        return organizer_mod.undo_move(get_vault(), path)
 
 
 @mcp.tool()
@@ -350,7 +358,7 @@ def onboard() -> dict:
         "add_task(content, due?) / list_tasks(include_done?, folder?)",
         "get_backlinks(path) / list_recent(n)",
         "index_brain(force?) — extract entities into the semantic graph",
-        "find_entity(query, type?) / related_notes(path, hops?) / graph_stats()",
+        "find_entity(query, type?, limit?) / related_notes(path, hops?) / graph_stats()",
         "context_bundle(query, hops?, limit?) — one call: hybrid hits + entities + related notes",
         "recall_bundle(mode, project?, since?) — digest/resume raw material for the recall skills",
         "consolidate_graph(apply?) — merge duplicate entities (dry-run default)",
@@ -399,10 +407,12 @@ def index_brain(force: bool = False) -> dict:
 
 
 @mcp.tool()
-def find_entity(query: str, type: str | None = None) -> list[dict]:
+def find_entity(query: str, type: str | None = None, limit: int = 20) -> list[dict]:
     """Look up graph entities by name or alias (case-insensitive substring).
-    Optional type filter: person, organization, domain, topic, project, source."""
-    return cache_mod.find_entity(_graph_db(), query, type=type)
+    Optional type filter: person, organization, domain, topic, project, source.
+    Best matches first (exact, then prefix, then substring; then most
+    mentions), at most `limit` results."""
+    return cache_mod.find_entity(_graph_db(), query, type=type, limit=limit)
 
 
 @mcp.tool()

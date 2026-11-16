@@ -38,6 +38,17 @@ def test_scan_skips_graph_ignored_and_hidden(vault):
     assert not any(p.startswith("copilot/") for p in scanned)
 
 
+def test_scan_skips_unknown_dot_directories(vault):
+    """A stray dot-directory of vault backups was scanned because it was not
+    one of three allow-listed names."""
+    backup = vault.root / ".backup-2026-07"
+    backup.mkdir()
+    (backup / "Sentinel ESG.md").write_text("x", encoding="utf-8")
+    scanned = indexer.scan_notes(vault)
+    assert "Daily.md" in scanned
+    assert not any(p.startswith(".backup-2026-07/") for p in scanned)
+
+
 def test_scan_excludes_caretaker_log_notes(vault):
     """Move/report logs are appended outside sweeps too (undo_move, the
     organize_vault tool); scanning them would feed log lines to the paid
@@ -301,3 +312,52 @@ def test_run_retry_failures_skips_unchanged_tracked_notes(vault):
     fx = FakeExtractor()
     counts = indexer.run(vault, fx, retry_failures=True)
     assert counts["processed"] == 0 and fx.calls == []
+
+
+def _half_write_then_fail(mp):
+    real = Path.write_text
+
+    def broken(self, data, *a, **kw):
+        real(self, data[: len(data) // 2], *a, **kw)
+        raise OSError("disk full")
+
+    mp.setattr(Path, "write_text", broken)
+
+
+def _manifest_dir_files(vault):
+    return sorted(p.name for p in indexer._manifest_path(vault.root).parent.iterdir())
+
+
+def test_save_manifest_success_roundtrips(vault):
+    m = {"hashes": {"a.md": "h1"}, "failures": {}}
+    indexer.save_manifest(m, vault.root)
+    assert indexer.load_manifest(vault.root) == m
+    assert _manifest_dir_files(vault) == ["manifest.json"]
+
+
+def test_save_manifest_failed_write_keeps_previous(vault, monkeypatch):
+    old = {"hashes": {"a.md": "h1", "b.md": "h2"}, "failures": {}}
+    indexer.save_manifest(old, vault.root)
+    with monkeypatch.context() as mp:
+        _half_write_then_fail(mp)
+        with pytest.raises(OSError):
+            indexer.save_manifest(
+                {"hashes": {"c.md": "h3" * 50}, "failures": {}}, vault.root)
+    assert indexer.load_manifest(vault.root) == old
+    assert _manifest_dir_files(vault) == ["manifest.json"]
+
+
+def test_save_manifest_failed_replace_keeps_previous(vault, monkeypatch):
+    old = {"hashes": {"a.md": "h1"}, "failures": {}}
+    indexer.save_manifest(old, vault.root)
+
+    def locked(src, dst):
+        raise PermissionError("sharing violation")
+
+    with monkeypatch.context() as mp:
+        mp.setattr("os.replace", locked)
+        mp.setattr("time.sleep", lambda s: None)
+        with pytest.raises(PermissionError):
+            indexer.save_manifest({"hashes": {"z.md": "h"}, "failures": {}}, vault.root)
+    assert indexer.load_manifest(vault.root) == old
+    assert _manifest_dir_files(vault) == ["manifest.json"]

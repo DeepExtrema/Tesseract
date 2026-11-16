@@ -2,6 +2,8 @@ from tesseract_mcp.search import (
     as_str_list,
     body_text,
     iter_candidate_notes,
+    is_skipped,
+    is_superseded,
     iter_note_files,
 )
 
@@ -72,3 +74,77 @@ def test_body_text_without_frontmatter_is_passthrough():
 
 def test_body_text_unclosed_frontmatter_is_passthrough():
     assert body_text("---\ntags: [x]\nno closing fence\n") == "---\ntags: [x]\nno closing fence\n"
+
+
+def test_skips_every_dot_directory_not_only_known_names(vault, vault_dir):
+    # A three-name allow-list let a stray backup folder reach the index; the
+    # rule is the whole dot-entry class now.
+    backup = vault_dir / ".notes-backup-2026"
+    backup.mkdir()
+    (backup / "Sentinel ESG.md").write_text(
+        "---\ntags: [project, esg]\n---\n\nESG incident ingestion pipeline copy.\n",
+        encoding="utf-8",
+    )
+    assert _paths(iter_candidate_notes(vault, tags=["esg"])) == [
+        "Projects/Sentinel ESG.md"
+    ]
+    assert not any(rel.startswith(".") for _p, rel in iter_note_files(vault))
+
+
+def test_skips_nested_dot_directory(vault, vault_dir):
+    nested = vault_dir / "Projects" / ".archive"
+    nested.mkdir()
+    (nested / "Old.md").write_text("ingestion pipeline archived\n", encoding="utf-8")
+    assert "Projects/.archive/Old.md" not in _paths(iter_candidate_notes(vault))
+    assert "Projects/.archive/Old.md" not in [
+        rel for _p, rel in iter_note_files(vault)
+    ]
+
+
+def test_is_skipped_rule():
+    assert is_skipped((".obsidian", "app.json"))
+    assert is_skipped(("Claude", ".trash", "Note.md"))
+    assert is_skipped((".smart-env", "x", "y.md"))
+    assert is_skipped((".hidden note.md",))
+    assert not is_skipped(("Projects", "Sentinel ESG.md"))
+    assert not is_skipped(("_Attachments", "img.png"))
+    assert not is_skipped(("00 - Maps of Content", "Home.md"))
+    assert not is_skipped(())
+
+
+def test_retired_entity_tombstone_is_out_of_search(vault, vault_dir):
+    # Retiring an orphaned entity only moves it out of search if the reader
+    # honours the tombstone; otherwise the short tombstone outranks its source.
+    graph = vault_dir / "Claude" / "Graph" / "Topics"
+    graph.mkdir(parents=True)
+    (graph / "CouchDB.md").write_text(
+        "---\nentity: topic\naliases: [Couch]\nretired: 2026-10-19 21:00\n---\n\n"
+        "# CouchDB\n\nDocument database used for LiveSync.\n\n"
+        "Retired: orphaned — no mentions or relations.\n",
+        encoding="utf-8",
+    )
+    rels = _paths(iter_candidate_notes(vault))
+    assert "Claude/Graph/Topics/CouchDB.md" not in rels
+    assert "Claude/Concepts/CouchDB.md" in rels
+
+
+def test_merge_stub_is_out_of_search(vault, vault_dir):
+    graph = vault_dir / "Claude" / "Graph" / "Topics"
+    graph.mkdir(parents=True)
+    (graph / "Couch DB.md").write_text(
+        "---\nentity: topic\nmerged_into: Claude/Graph/Topics/CouchDB\n---\n\n"
+        "# Couch DB\n\nMerged into [[CouchDB]].\n",
+        encoding="utf-8",
+    )
+    assert "Claude/Graph/Topics/Couch DB.md" not in _paths(
+        iter_candidate_notes(vault)
+    )
+
+
+def test_is_superseded_rule():
+    assert is_superseded("---\nretired: 2026-10-19 21:00\n---\n\n# X\n")
+    assert is_superseded("---\nmerged_into: Claude/Graph/Topics/Y\n---\n\n# X\n")
+    assert not is_superseded("---\nentity: topic\naliases: [GSFC]\n---\n\n# X\n")
+    assert not is_superseded("# X\n\nNo frontmatter.\n")
+    # an empty value is not a retirement — only a recorded date retires a note
+    assert not is_superseded("---\nretired:\n---\n\n# X\n")

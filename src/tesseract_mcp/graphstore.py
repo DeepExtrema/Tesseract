@@ -34,9 +34,16 @@ REDIRECT_MAX_DEPTH = 5
 
 # Mentions are path-qualified: - [[Projects/Sentinel ESG|Sentinel ESG]] — evidence
 # group 1 = full vault-relative path (no .md); group 2 = evidence (optional)
-MENTION_LINE = re.compile(r"^- \[\[([^\]|]+)\|[^\]]+\]\](?:\s+[—-]\s+(.*))?$")
+# Note names may contain "]" ("Acme - [2027] Software Engineer"), so the
+# target runs to the last "|" and the alias is matched lazily up to the "]]"
+# that leaves a well-formed rest of line. Excluding "]" would drop those
+# mentions silently and read as "no connections" downstream.
+MENTION_LINE = re.compile(r"^- \[\[([^|]+)\|.+?\]\](?:\s+[—-]\s+(.*))?$")
 # Relations are path-qualified the same way: - operates_in [[Claude/Graph/.../X|X]]
 # group 1 = relation name; group 2 = full vault-relative path of target (no .md)
+# Relation targets are always entity notes, whose filenames pass through
+# notes.safe_filename and so never contain "]" — unlike mention targets above,
+# which are human note paths and keep whatever the author typed.
 RELATION_LINE = re.compile(r"^- (\w+) \[\[([^\]|]+)\|[^\]]+\]\]$")
 
 
@@ -109,9 +116,11 @@ def merge_aliases(vault: Vault, rel: str, candidates: list[str]) -> bool:
     added = [a for a in candidates if a and a.casefold() not in known]
     if not added:
         return False
-    end = text.find("\n---", 3)
+    end = text.find("\n---", 3) if text.startswith("---") else -1
     if end == -1:
         return False
+    if not meta and text[3:end].strip():
+        return False  # unparseable YAML: rewriting would drop its keys
     meta["aliases"] = current + added
     fm = "---\n" + yaml.safe_dump(meta, sort_keys=False, default_flow_style=None) + "---"
     vault.write(rel, fm + text[end + 4:], overwrite=True)

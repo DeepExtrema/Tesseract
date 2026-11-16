@@ -1,6 +1,18 @@
 import pytest
 
+from tesseract_mcp import corpus, embeddings, sc_adapter
 from tesseract_mcp.vault import Vault
+
+
+@pytest.fixture(autouse=True)
+def _fresh_process_memory():
+    """The note index and vector memos are process-wide; every test starts
+    with none, as if the server had just started."""
+    for module in (corpus, sc_adapter, embeddings):
+        module.reset()
+    yield
+    for module in (corpus, sc_adapter, embeddings):
+        module.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -114,18 +114,41 @@ def _entity_dict(con: sqlite3.Connection, row, names_by_path: dict[str, str]) ->
             "relations": relations, "mention_count": count}
 
 
-def find_entity(db_path: Path, query: str, type: str | None = None) -> list[dict]:
+def find_entity(
+    db_path: Path, query: str, type: str | None = None, limit: int = 20
+) -> list[dict]:
+    """Entities whose name or alias contains `query` (case-insensitive).
+
+    Ranked by match tier (exact name/alias, then prefix, then substring), then
+    most mentions, then name, then path so the order is stable. Truncated to
+    `limit` after ranking.
+    """
     con = _connect(db_path)
     q = query.casefold()
     names_by_path = _path_name_map(con)
-    results = []
+    mention_counts = {
+        r[0]: r[1]
+        for r in con.execute(
+            "SELECT entity_path, COUNT(*) FROM mentions GROUP BY entity_path"
+        )
+    }
+    ranked = []
     for row in con.execute("SELECT * FROM entities"):
-        names = [row["name"]] + json.loads(row["aliases"])
-        if not any(q in n.casefold() for n in names):
+        aliases = json.loads(row["aliases"])
+        names = [n.casefold() for n in [row["name"]] + aliases]
+        if not any(q in n for n in names):
             continue
         if type and row["type"] != type:
             continue
-        results.append(_entity_dict(con, row, names_by_path))
+        tier = 0 if q in names else 1 if any(n.startswith(q) for n in names) else 2
+        ranked.append(
+            ((tier, -mention_counts.get(row["path"], 0), row["name"].casefold(),
+              row["path"]), row)
+        )
+    ranked.sort(key=lambda t: t[0])
+    results = [
+        _entity_dict(con, row, names_by_path) for _, row in ranked[: max(0, limit)]
+    ]
     con.close()
     return results
 
@@ -177,6 +200,8 @@ def related_notes(
     frontier = list(seed)
     hop = 1
     for _ in range(max(0, hops - 1)):
+        if not frontier:
+            break
         hop += 1
         nxt = []
         for ent in frontier:

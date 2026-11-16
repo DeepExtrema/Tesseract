@@ -30,7 +30,7 @@ def test_loads_vector_for_fresh_note(vault, vault_dir):
         )],
     )
     got = load_note_vectors(vault)
-    assert got["Daily.md"]["vec"] == [0.1, 0.2, 0.3]
+    assert got["Daily.md"]["vec"].tolist() == [0.1, 0.2, 0.3]
     assert got["Daily.md"]["fresh"] is True
 
 
@@ -81,7 +81,7 @@ def test_last_occurrence_wins_for_duplicate_keys(vault, vault_dir):
         ],
     )
     got = load_note_vectors(vault)
-    assert got["Daily.md"]["vec"] == [0.0, 1.0]
+    assert got["Daily.md"]["vec"].tolist() == [0.0, 1.0]
 
 
 def test_no_smart_env_dir_returns_empty(vault):
@@ -110,4 +110,4 @@ def test_ignores_block_level_entries(vault, vault_dir):
     )
     got = load_note_vectors(vault)
     assert list(got.keys()) == ["Daily.md"]
-    assert got["Daily.md"]["vec"] == [0.1, 0.2]
+    assert got["Daily.md"]["vec"].tolist() == [0.1, 0.2]
