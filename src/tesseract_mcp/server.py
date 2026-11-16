@@ -238,8 +238,8 @@ def sheet_schema(sheet: str | None = None) -> dict:
 @_write_tool
 def undo_move(path: str) -> dict:
     """Reverse the organizer's most recent move of the given note (current
-    vault-relative path). Restores the file, its inbound links, and the
-    index manifest entry."""
+    vault-relative path). Restores the file, its inbound links, the index
+    manifest entry and its stored vector, then rebuilds graph.db."""
     with _caretaker():
         return organizer_mod.undo_move(get_vault(), path)
 

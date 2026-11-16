@@ -57,10 +57,10 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-# In-process memo of parsed vector-cache files, keyed by (mtime_ns, size).
-# The files grow with the vault (megabytes of JSON) and are read on every
-# search in a long-running server; the stat key re-parses only after an
-# on-disk change, so out-of-process writers are still picked up.
+# In-process memo of parsed JSON vector-cache files, keyed by (mtime_ns, size).
+# Only the entity-vector cache (blocking.py) still uses them; the stat key
+# re-parses only after an on-disk change, so out-of-process writers are still
+# picked up.
 _parsed_caches: dict[str, tuple[tuple[int, int], dict]] = {}
 
 

@@ -127,15 +127,15 @@ adds the two scores:
   computed after the note's last edit. When Smart Connections' embedding is
   stale or absent, `embeddings.py` falls back to a local
   `sentence-transformers` model, `TaylorAI/bge-micro-v2`, and caches the
-  result (keyed by content hash) in `note_vectors.npz` next to the
+  result (keyed by note path, valid while the content hash matches) in `note_vectors.npz` next to the
   rest of this vault's state. That fallback model is not an arbitrary
   choice: it's pinned to be *identical* to what Smart Connections uses,
   because embedding vectors from two different models live in unrelated
   vector spaces — mixing them into one similarity ranking would silently
   corrupt it.
 - **Indexing keeps the cache warm; search isn't fully exempt.**
-  `indexer.run` calls the same `embeddings.get_note_vectors` function that
-  `hybrid_search` calls, right after each incremental indexing pass — so
+  `indexer.run` resolves vectors through the same `embeddings` code that
+  `hybrid_search` uses, right after each incremental indexing pass — so
   immediately after an `index_brain` run, every note's vector is already
   cached and a search usually just reads it back. But `get_note_vectors` is
   not purely read-only: for any note edited *since* the last indexing pass

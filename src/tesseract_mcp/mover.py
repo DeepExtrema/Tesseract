@@ -77,13 +77,13 @@ def _plan_rewrites(
 
 
 def rename_vector_cache_entry(vault: Vault, old_rel: str, new_rel: str) -> None:
-    """Best effort: the files already moved, so a cache failure must not
-    undo or fail the move. A missed rename self-heals (the note is just
-    re-embedded on the next search)."""
+    """Best effort: the files already moved, so a failure here, an unreadable
+    store included, must not undo or fail the move. A missed rename
+    self-heals (the note is just re-embedded on the next search)."""
     try:
         embeddings.rename_cache_entry(
             indexer.state_dir(vault.root), old_rel, new_rel)
-    except OSError:
+    except Exception:
         pass
 
 

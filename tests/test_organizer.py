@@ -562,6 +562,35 @@ def test_undo_carries_vector_back(org_vault, moved):
     assert LOOSE in cache and FILED not in cache
 
 
+def test_undo_completes_when_the_vector_store_is_unreadable(org_vault, moved):
+    from tesseract_mcp import embeddings
+    _warm(org_vault)
+    state = indexer.state_dir(org_vault.root)
+    (state / embeddings.STORE_FILE).write_bytes(b"not an npz file")
+    embeddings.reset()
+    undo_move(org_vault, FILED)
+    assert (org_vault.root / LOOSE).is_file()
+    entries = [json.loads(line) for line in
+               journal_path(org_vault).read_text(encoding="utf-8").splitlines()]
+    assert [e["undone"] for e in entries] == [True]
+
+
+def test_move_carries_vector_from_the_old_json_store(org_vault):
+    from tesseract_mcp import embeddings
+    _warm(org_vault)
+    state = indexer.state_dir(org_vault.root)
+    legacy = {rel: {"hash": digest, "vec": vec.tolist()}
+              for rel, (digest, vec) in _fallback_cache(org_vault).items()}
+    (state / embeddings.LEGACY_JSON_FILE).write_text(json.dumps(legacy), encoding="utf-8")
+    (state / embeddings.STORE_FILE).unlink()
+    embeddings.reset()
+    move_note(org_vault, LOOSE, FILED)
+    emb = CountingEmbedder()
+    paths = _search(org_vault, emb)
+    assert FILED in paths and LOOSE not in paths
+    assert not _note_text_embedded(emb)
+
+
 def test_note_with_rewritten_backlink_is_still_found(org_vault):
     """A linker's content changes with the rewrite, so it is re-embedded (its
     hash no longer matches); it must still be searchable at its own path."""
