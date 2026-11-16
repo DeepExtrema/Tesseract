@@ -368,3 +368,13 @@ def test_no_tool_apply_keeps_dry_runs(monkeypatch):
 
     monkeypatch.setattr(server, "_make_consolidator", lambda: FakeBackend())
     assert server.consolidate_graph()["applied"] is False
+
+
+def test_origin_passes_through_tools():
+    from tesseract_mcp.search import parse_frontmatter
+
+    o = "t3-thread://v2/env/thread:abc"
+    rel = server.log_session("Orig", "b", project="p", origin=o)
+    assert parse_frontmatter(server.read_note(rel))["origin"] == o
+    rel = server.upsert_concept("OrigConcept", "b", origin=o)
+    assert parse_frontmatter(server.read_note(rel))["origin"] == o

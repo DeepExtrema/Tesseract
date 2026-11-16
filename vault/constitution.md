@@ -68,7 +68,7 @@ Rules for every AI agent writing to this vault. Read this before writing.
 
 ## Note format
 
-- YAML frontmatter on every agent note: `created`, `agent`, `project`, `tags`.
+- YAML frontmatter on every agent note: `created`, `agent`, `project`, `tags`; optionally `origin`, naming the conversation that wrote it (`write_note` callers add it by hand); it is context, not authority.
 - Use `[[wikilinks]]` to connect related notes — an unlinked note is a lost
   memory.
 - Write for the reader who has no session context: full sentences, no
