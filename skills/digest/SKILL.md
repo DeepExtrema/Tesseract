@@ -32,7 +32,9 @@ Requires the `tesseract` MCP server.
    wrote if they dominate the list.
 
    `## Proposals pending` — the `proposals` count plus a pointer to
-   `[[Organizer]]` and `[[Librarian]]`.
+   `[[Organizer]]` and `[[Librarian]]`. If `proposals.stale` is above 0,
+   add one ⚠ summary line with the count and each `stale_items` entry
+   (path → suggested, age in days); no per-item alerts. Never dismiss them.
 
    `## New graph activity` — `new_entities` notes (entity names are the
    filename stems), `[[wikilinked]]`.

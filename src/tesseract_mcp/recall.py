@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, timedelta
 
 from . import librarian as librarian_mod
+from . import organizer as organizer_mod
 from . import tasks as tasks_mod
 from .cache import find_entity
 from .indexer import db_path
@@ -72,7 +73,9 @@ def digest_bundle(
     def _proposals() -> dict:
         state = librarian_mod.status(vault)
         pending = (state.get("health") or {}).get("pending_proposals", 0)
-        return {"pending": pending, "detail_note": ORGANIZER_NOTE}
+        stale = organizer_mod.stale_proposals(vault, now.date())
+        return {"pending": pending, "stale": len(stale), "stale_items": stale,
+                "detail_note": ORGANIZER_NOTE}
 
     return {
         "mode": "digest",

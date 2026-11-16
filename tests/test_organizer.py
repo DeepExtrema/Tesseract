@@ -221,7 +221,7 @@ def test_sweep_ambiguous_note_becomes_proposal(org_vault):
     props = [p["path"] for p in report["proposals"]]
     assert "Fusion Cuisine In Space.md" in props
     assert (org_vault.root / "Fusion Cuisine In Space.md").is_file()  # not moved
-    assert "Proposals" in org_vault.read(ORGANIZER_NOTE)
+    assert "tesseract:proposals:start" in org_vault.read(ORGANIZER_NOTE)
 
 
 def test_sweep_duplicate_stem_becomes_proposal(org_vault):
@@ -723,3 +723,205 @@ def test_invalid_budget_names_the_variable(org_vault, budget_srv, monkeypatch, b
     with pytest.raises(VaultError, match=BUDGET_ENV):
         budget_srv.organize_vault(apply=True)
     assert _loose(org_vault) == before
+
+
+# --- proposal lifecycle (managed block in Claude/Organizer.md) -----------
+
+from datetime import date, datetime, timedelta  # noqa: E402
+
+from tesseract_mcp import librarian, recall  # noqa: E402
+from tesseract_mcp.organizer import (  # noqa: E402
+    PROPOSAL_STALE_DAYS,
+    parse_proposal_block,
+    render_proposal_block,
+    stale_proposals,
+)
+
+D0 = date(2026, 1, 1)
+FUSION = "Fusion Cuisine In Space.md"
+BLOCK_START = "<!-- tesseract:proposals:start -->"
+
+
+def _day(n):
+    return D0 + timedelta(days=n)
+
+
+@pytest.fixture
+def prop_vault(org_vault):
+    """org_vault plus one mixed note the sweep can only propose."""
+    (org_vault.root / FUSION).write_text(
+        "space station recipe experiments\n", encoding="utf-8")
+    return org_vault
+
+
+def _sweep(vault, n=0, apply=True, **kw):
+    return run_sweep(vault, ClusterEmbedder(), apply=apply, today=_day(n), **kw)
+
+
+def _section(note, heading):
+    """Lines of one checkbox list inside the managed block."""
+    block = note.split(BLOCK_START, 1)[1]
+    parts = block.split(f"#### {heading}\n", 1)[1]
+    return [ln for ln in parts.split("#### ")[0].splitlines() if ln.startswith("- [")]
+
+
+def _bytes_and_mtimes(*roots):
+    return {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+            for r in roots for p in sorted(Path(r).rglob("*")) if p.is_file()}
+
+
+def test_stale_days_is_thirty():
+    assert PROPOSAL_STALE_DAYS == 30
+
+
+def test_block_round_trips_every_field():
+    entries = [
+        {"path": "A; proposed x.md", "suggested": "02 - Space", "share": 0.55,
+         "reason": "duplicate stem — bare links; would become ambiguous",
+         "proposed": "2026-01-01", "stale_since": "2026-01-31",
+         "state": "needs-resolution", "ticked": False},
+        {"path": "B.md", "suggested": "05 - Cooking", "share": 0.0,
+         "reason": "linked from sheet rows: Jobs/a.md, Jobs/b.md",
+         "proposed": "2026-01-02", "stale_since": None,
+         "state": "pending", "ticked": False},
+        {"path": "C.md", "suggested": "02 - Space", "share": 0.667,
+         "reason": "low confidence", "proposed": "2026-01-03",
+         "stale_since": None, "state": "dismissed", "ticked": False},
+    ]
+    assert parse_proposal_block(render_proposal_block(entries)) == entries
+
+
+def test_proposal_listed_once_and_second_sweep_writes_nothing(prop_vault):
+    _sweep(prop_vault, 0)
+    _sweep(prop_vault, 0)  # settle: the move line from sweep 1 is in the note
+    first = prop_vault.read(ORGANIZER_NOTE)
+    report = _sweep(prop_vault, 1)
+    assert prop_vault.read(ORGANIZER_NOTE) == first
+    pending = _section(first, "Pending")
+    assert len(pending) == 1 and FUSION in pending[0]
+    assert "proposed 2026-01-01" in pending[0]
+    prop = [p for p in report["proposals"] if p["path"] == FUSION][0]
+    assert (prop["state"], prop["proposed"], prop["age_days"]) == (
+        "pending", "2026-01-01", 1)
+
+
+def test_ticked_line_is_dismissed_and_never_reproposed(prop_vault):
+    _sweep(prop_vault, 0)
+    note = prop_vault.read(ORGANIZER_NOTE)
+    prop_vault.write(ORGANIZER_NOTE,
+                     note.replace(f"- [ ] `{FUSION}`", f"- [x] `{FUSION}`"),
+                     overwrite=True)
+    report = _sweep(prop_vault, 1)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert len(_section(text, "Dismissed")) == 1
+    assert _section(text, "Pending") == []
+    assert "proposal dismissed" in text
+    assert (prop_vault.root / FUSION).is_file()
+    for later in (_sweep(prop_vault, 2), _sweep(prop_vault, 3, apply=False)):
+        assert FUSION not in [p["path"] for p in later["proposals"]]
+        assert {"path": FUSION, "reason": "proposal dismissed"} in later["skipped"]
+    assert {"path": FUSION, "reason": "proposal dismissed"} in report["skipped"]
+
+
+def test_pending_turns_stale_at_threshold_and_logs_once(prop_vault):
+    _sweep(prop_vault, 0)
+    _sweep(prop_vault, PROPOSAL_STALE_DAYS - 1)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert len(_section(text, "Pending")) == 1
+    assert stale_proposals(prop_vault, _day(PROPOSAL_STALE_DAYS - 1)) == []
+
+    report = _sweep(prop_vault, PROPOSAL_STALE_DAYS)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    stale = _section(text, "Needs resolution")
+    assert len(stale) == 1 and "proposed 2026-01-01" in stale[0]
+    assert _section(text, "Pending") == []
+    assert text.count("proposal needs-resolution") == 1
+    assert [p["state"] for p in report["proposals"] if p["path"] == FUSION] == [
+        "needs-resolution"]
+    health = librarian.run_health(prop_vault, {}, None, None, {})
+    assert health["stale_proposals"] == 1
+
+    again = _sweep(prop_vault, PROPOSAL_STALE_DAYS + 5)
+    assert prop_vault.read(ORGANIZER_NOTE) == text
+    assert [p["age_days"] for p in again["proposals"] if p["path"] == FUSION] == [
+        PROPOSAL_STALE_DAYS + 5]
+
+
+def test_stale_note_filed_by_owner_leaves_as_applied(prop_vault):
+    _sweep(prop_vault, 0)
+    _sweep(prop_vault, PROPOSAL_STALE_DAYS)
+    move_note(prop_vault, FUSION, f"02 - Space/{FUSION}")
+    _sweep(prop_vault, PROPOSAL_STALE_DAYS + 1)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert _section(text, "Needs resolution") == []
+    assert "proposal applied" in text
+    assert stale_proposals(prop_vault, _day(PROPOSAL_STALE_DAYS + 1)) == []
+    assert librarian.run_health(prop_vault, {}, None, None, {})[
+        "stale_proposals"] == 0
+
+
+@pytest.mark.parametrize("how", ["delete", "organize-false"])
+def test_pending_note_gone_or_pinned_is_withdrawn_never_stale(prop_vault, how):
+    _sweep(prop_vault, 0)
+    path = prop_vault.root / FUSION
+    if how == "delete":
+        path.unlink()
+    else:
+        path.write_text("---\norganize: false\n---\n\nspace station recipe\n",
+                        encoding="utf-8")
+    _sweep(prop_vault, PROPOSAL_STALE_DAYS + 10)
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert _section(text, "Pending") == []
+    assert _section(text, "Needs resolution") == []
+    assert "proposal withdrawn" in text
+    assert stale_proposals(prop_vault, _day(PROPOSAL_STALE_DAYS + 10)) == []
+
+
+def test_synced_stale_item_is_reported_without_any_write(prop_vault):
+    """A machine that never ran an applying sweep still sees the item."""
+    line = (f"- [ ] `{FUSION}` → **02 - Space** (share 0.6; low confidence; "
+            f"proposed 2026-01-01; stale since 2026-01-31)")
+    prop_vault.write(
+        ORGANIZER_NOTE,
+        "# Organizer\n\n## Log\n\n" + BLOCK_START + "\n#### Needs resolution\n"
+        + line + "\n#### Pending\n#### Dismissed\n<!-- tesseract:proposals:end -->\n",
+        overwrite=True)
+    state = indexer.state_dir(prop_vault.root)
+    state.mkdir(parents=True, exist_ok=True)
+    before = _bytes_and_mtimes(prop_vault.root, state)
+
+    report = _sweep(prop_vault, 45, apply=False)
+    digest = recall.digest_bundle(prop_vault, now=datetime(2026, 2, 15, 12, 0))
+
+    assert [(p["state"], p["age_days"]) for p in report["proposals"]
+            if p["path"] == FUSION] == [("needs-resolution", 45)]
+    props = digest["proposals"]
+    assert props["stale"] == 1
+    assert props["stale_items"][0]["path"] == FUSION
+    assert props["stale_items"][0]["age_days"] == 45
+    assert _bytes_and_mtimes(prop_vault.root, state) == before
+
+
+def test_old_proposal_sections_stay_byte_identical_and_block_added_once(prop_vault):
+    old = ("# Organizer\n\nAutonomous move log and proposals.\n\n## Log\n"
+           + "".join(f"\n### Proposals 2025-12-0{i}\n"
+                     f"- `Old {i}.md` → **02 - Space** (share 0.5; low confidence)\n"
+                     for i in (1, 2, 3)))
+    prop_vault.write(ORGANIZER_NOTE, old, overwrite=True)
+    _sweep(prop_vault, 0, max_moves=0)
+    first = prop_vault.read(ORGANIZER_NOTE)
+    assert first.startswith(old)
+    assert first.count(BLOCK_START) == 1
+    _sweep(prop_vault, 1, max_moves=0)
+    assert prop_vault.read(ORGANIZER_NOTE) == first
+
+
+def test_agent_apply_with_unchanged_proposals_writes_nothing(
+        budget_srv, org_vault):
+    (org_vault.root / FUSION).write_text(
+        "space station recipe experiments\n", encoding="utf-8")
+    budget_srv.organize_vault(apply=True)
+    first = org_vault.read(ORGANIZER_NOTE)
+    result = budget_srv.organize_vault(apply=True)
+    assert result["moved"] == []
+    assert org_vault.read(ORGANIZER_NOTE) == first

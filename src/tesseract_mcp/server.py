@@ -179,8 +179,13 @@ def organize_vault(apply: bool = False) -> dict:
     it, agent apply calls move nothing. The budget is counted from this
     machine's undo journal, includes undone moves, and is shared with every
     other move journaled today (the scheduled Librarian and CLI are not
-    limited by it). Apply results carry `move_budget`. Like any apply call,
-    one that moves nothing still appends its proposals to Claude/Organizer.md.
+    limited by it). Apply results carry `move_budget`. Proposals live in one
+    managed block in Claude/Organizer.md (states pending, needs-resolution,
+    dismissed); each proposal in the result carries `state`, `proposed` and
+    `age_days`. An apply call writes the note only when that block's text
+    changes, so one that moves nothing and proposes nothing new writes nothing.
+    Dry-runs read the block and write nothing. Needs-resolution items are 30+
+    days old: tell the owner, never tick a box yourself without their say-so.
     The scheduled CLI sweep is the autonomous path — see constitution →
     Organizer."""
     if apply:

@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from . import cache, indexer, platforms
@@ -45,6 +46,24 @@ ORGANIZER_NOTE = "Claude/Organizer.md"
 _NOTE_SEED = (
     "# Organizer\n\nAutonomous move log and proposals. "
     "See constitution → Organizer.\n\n## Log\n"
+)
+
+PROPOSAL_STALE_DAYS = 30
+_BLOCK_START = "<!-- tesseract:proposals:start -->"
+_BLOCK_END = "<!-- tesseract:proposals:end -->"
+_BLOCK_HINT = (
+    "_Maintained by the sweep. Tick a box to dismiss that proposal "
+    "(this path to this folder only)._"
+)
+_SECTIONS = (
+    ("needs-resolution", "Needs resolution"),
+    ("pending", "Pending"),
+    ("dismissed", "Dismissed"),
+)
+_LINE_RE = re.compile(
+    r"^- \[([ xX])\] `(.+?)` → \*\*(.+?)\*\* "
+    r"\(share ([0-9.]+); (.*); proposed (\d{4}-\d{2}-\d{2})"
+    r"(?:; stale since (\d{4}-\d{2}-\d{2}))?\)\s*$"
 )
 
 
@@ -280,11 +299,168 @@ def undo_move(vault: Vault, note_rel: str) -> dict:
     return {"restored": entry["from"], "was": entry["to"]}
 
 
+# --- proposal lifecycle -------------------------------------------------
+# One managed block in Claude/Organizer.md holds every open proposal; the
+# note syncs, so any machine reads the same state. Identity = (path,
+# suggested folder). Only an applying sweep writes it.
+
+
+def render_proposal_block(entries: list[dict]) -> str:
+    out = [_BLOCK_START, _BLOCK_HINT]
+    for state, title in _SECTIONS:
+        out.append(f"#### {title}")
+        group = [e for e in entries if e["state"] == state]
+        for e in group:
+            box = "x" if state == "dismissed" else " "
+            stale = f"; stale since {e['stale_since']}" if e["stale_since"] else ""
+            out.append(
+                f"- [{box}] `{e['path']}` → **{e['suggested']}** "
+                f"(share {e['share']}; {e['reason']}; proposed {e['proposed']}{stale})"
+            )
+        if not group:
+            out.append("_none_")
+    out.append(_BLOCK_END)
+    return "\n".join(out)
+
+
+def parse_proposal_block(block: str) -> list[dict]:
+    """Entries of a managed block. `ticked` marks an owner's tick on a line
+    that is not yet dismissed; unrecognised lines are ignored."""
+    entries: list[dict] = []
+    state = None
+    titles = {title: s for s, title in _SECTIONS}
+    for line in block.splitlines():
+        if line.startswith("#### "):
+            state = titles.get(line[5:].strip())
+            continue
+        m = _LINE_RE.match(line)
+        if state is None or not m:
+            continue
+        box, path, suggested, share, reason, proposed, stale = m.groups()
+        entries.append({
+            "path": path, "suggested": suggested, "share": float(share),
+            "reason": reason, "proposed": proposed, "stale_since": stale,
+            "state": state, "ticked": box != " " and state != "dismissed",
+        })
+    return entries
+
+
+def _read_proposals(vault: Vault) -> tuple[str | None, list[dict]]:
+    """(note text or None, stored entries). A damaged block is an error, not
+    a silent reset: it fails before any move or write."""
+    try:
+        text = vault.read(ORGANIZER_NOTE)
+    except VaultError:
+        return None, []
+    start = text.find(_BLOCK_START)
+    end = text.find(_BLOCK_END, start + 1) if start >= 0 else -1
+    if (start >= 0) != (end >= 0) or text.count(_BLOCK_START) > 1:
+        raise VaultError(
+            f"{ORGANIZER_NOTE}: proposals block markers are damaged; fix by hand")
+    if start < 0:
+        return text, []
+    return text, parse_proposal_block(text[start:end + len(_BLOCK_END)])
+
+
+def _age(proposed: str, today: date) -> int:
+    return (today - date.fromisoformat(proposed)).days
+
+
+def stale_proposals(vault: Vault, today: date | None = None) -> list[dict]:
+    """Open proposals past PROPOSAL_STALE_DAYS the owner has not ticked,
+    read from the synced block (works on any machine, writes nothing)."""
+    today = today or date.today()
+    _, entries = _read_proposals(vault)
+    out = []
+    for e in entries:
+        age = _age(e["proposed"], today)
+        if e["ticked"] or e["state"] == "dismissed":
+            continue
+        if e["state"] == "needs-resolution" or age >= PROPOSAL_STALE_DAYS:
+            out.append({
+                "path": e["path"], "suggested": e["suggested"],
+                "proposed": e["proposed"], "stale_since": e["stale_since"],
+                "age_days": age,
+            })
+    return out
+
+
+def _advance(vault: Vault, stored: list[dict], proposed: list[dict],
+             today: date) -> tuple[list[dict], list[str]]:
+    """Next block entries and log lines for one sweep's fresh proposals."""
+    iso = today.isoformat()
+    current = {(p["path"], p["suggested"]): p for p in proposed}
+    out: list[dict] = []
+    log: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    def note(what: str, e: dict) -> None:
+        log.append(f"- {iso} — proposal {what}: `{e['path']}` → **{e['suggested']}**")
+
+    def leave(e: dict) -> None:
+        gone = not (vault.root / e["path"]).is_file()
+        filed = (vault.root / e["suggested"] / e["path"].rsplit("/", 1)[-1]).is_file()
+        note("applied" if gone and filed else "withdrawn", e)
+
+    for e in stored:
+        e = dict(e)
+        key = (e["path"], e["suggested"])
+        seen.add(key)
+        if e["ticked"]:
+            e.update(state="dismissed", ticked=False)
+            note("dismissed", e)
+        elif e["state"] == "dismissed":
+            if not (vault.root / e["path"]).is_file():
+                leave(e)
+                continue
+        elif key not in current:
+            leave(e)
+            continue
+        elif e["state"] == "pending" and _age(e["proposed"], today) >= PROPOSAL_STALE_DAYS:
+            e.update(state="needs-resolution", stale_since=iso)
+            note("needs-resolution", e)
+        out.append(e)
+    for key, p in current.items():
+        if key not in seen:
+            out.append({
+                "path": p["path"], "suggested": p["suggested"],
+                "share": p["share"], "reason": p["reason"], "proposed": iso,
+                "stale_since": None, "state": "pending", "ticked": False,
+            })
+    return out, log
+
+
+def _store_proposals(vault: Vault, entries: list[dict], log: list[str]) -> None:
+    """Rewrite the block (and append log lines) only when the text changes."""
+    text, stored = _read_proposals(vault)
+    if text is None:
+        text = _NOTE_SEED
+    block = render_proposal_block(entries)
+    start = text.find(_BLOCK_START)
+    if start >= 0:
+        end = text.index(_BLOCK_END, start) + len(_BLOCK_END)
+        new = text[:start] + block + text[end:]
+    elif entries:
+        new = text + ("" if text.endswith("\n") else "\n") + "\n" + block + "\n"
+    else:
+        new = text
+    if log:
+        new += ("" if new.endswith("\n") else "\n") + "\n".join(log) + "\n"
+    if new != text:
+        vault.write(ORGANIZER_NOTE, new, overwrite=True)
+
+
 def run_sweep(
-    vault: Vault, embedder=None, apply: bool = False, max_moves: int | None = None
+    vault: Vault, embedder=None, apply: bool = False,
+    max_moves: int | None = None, today: date | None = None,
 ) -> dict:
     """max_moves caps moves per sweep (None = unlimited); confident moves past
-    the cap are skipped and re-evaluated next sweep."""
+    the cap are skipped and re-evaluated next sweep. Proposals follow the
+    lifecycle above: an applying sweep updates the managed block in
+    Claude/Organizer.md (only when its text changes); a dry-run reads it and
+    writes nothing. `today` is injectable for tests."""
+    today = today or date.today()
+    _, stored = _read_proposals(vault)
     if apply:  # fail before any move if the journal cannot be opened
         os.close(_open_journal(vault))
     if embedder is None:
@@ -367,15 +543,23 @@ def run_sweep(
     if apply and moved:
         cache.rebuild(vault, indexer.db_path(vault.root))
         cache_rebuilt = True
-    if apply and proposals:
-        _ensure_note(vault)
-        lines = [f"\n### Proposals {datetime.now().strftime('%Y-%m-%d')}\n"]
-        for p in proposals:
-            lines.append(
-                f"- `{p['path']}` → **{p['suggested']}** "
-                f"(share {p['share']}; {p['reason']})\n"
-            )
-        vault.append(ORGANIZER_NOTE, "".join(lines))
+    dismissed = {(e["path"], e["suggested"]) for e in stored
+                 if e["state"] == "dismissed" or e["ticked"]}
+    open_now = []
+    for p in proposals:
+        if (p["path"], p["suggested"]) in dismissed:
+            skipped.append({"path": p["path"], "reason": "proposal dismissed"})
+        else:
+            open_now.append(p)
+    proposals = open_now
+    entries, log = _advance(vault, stored, proposals, today)
+    by_key = {(e["path"], e["suggested"]): e for e in entries}
+    for p in proposals:
+        e = by_key[(p["path"], p["suggested"])]
+        p["state"], p["proposed"] = e["state"], e["proposed"]
+        p["age_days"] = _age(e["proposed"], today)
+    if apply:
+        _store_proposals(vault, entries, log)
     return {
         "moved": moved, "proposals": proposals,
         "skipped": skipped, "cache_rebuilt": cache_rebuilt,

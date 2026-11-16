@@ -156,6 +156,7 @@ def run_health(
         "cache_consistency": lambda: check_cache_consistency(vault),
         "pending_proposals": lambda: count_pending_proposals(
             state, organize_report, consolidate_result),
+        "stale_proposals": lambda: len(organizer_mod.stale_proposals(vault)),
         "invalid_sheet_rows": lambda: count_invalid_sheet_rows(vault),
         "pending_retirements": lambda: len(
             (state.get("cleanup") or {}).get("pending_retirements", [])),
@@ -465,6 +466,8 @@ def format_report(result: dict, now: datetime) -> str:
     consistent = isinstance(cc, dict) and cc.get("consistent", False)
     invalid_rows = h.get("invalid_sheet_rows", -1)
     invalid_n = invalid_rows if isinstance(invalid_rows, int) else -1
+    stale_raw = h.get("stale_proposals", 0)
+    stale_p = stale_raw if isinstance(stale_raw, int) else -1
     lines.append(
         f"- health: stale_embeddings {stale_n} {mark(stale_n == 0)} | "
         f"manifest_drift {drift_n} {mark(drift_n == 0)} | "
@@ -472,6 +475,7 @@ def format_report(result: dict, now: datetime) -> str:
         f"cache_consistency {mark(consistent)} | "
         f"invalid_sheet_rows {invalid_n} {mark(invalid_n == 0)} | "
         f"pending_proposals {h.get('pending_proposals', 0)} | "
+        f"stale_proposals {stale_p} {mark(stale_p == 0)} | "
         f"pending_retirements {h.get('pending_retirements', 0)}\n")
 
     errs = result["errors"]
@@ -659,12 +663,29 @@ def status(vault: Vault) -> dict:
     """Read-only view of the last sweep for the librarian_status tool."""
     p = state_path(vault)
     if not p.exists():
-        return {"status": "no sweep yet"}
+        out = {"status": "no sweep yet"}
+        stale = _live_stale_proposals(vault)
+        if stale:  # a synced block can hold stale items before any local sweep
+            out["stale_proposals"] = stale
+        return out
     try:
-        return load_state(vault)
+        state = load_state(vault)
     except json.JSONDecodeError as e:
         return {"status": "state file unreadable",
                 "error": str(e), "path": str(p)}
+    # the synced proposals block is the truth on every machine; the stored
+    # health count only reflects this machine's last applying sweep
+    health = state.get("health")
+    if isinstance(health, dict):
+        health["stale_proposals"] = _live_stale_proposals(vault)
+    return state
+
+
+def _live_stale_proposals(vault: Vault) -> int | dict:
+    try:
+        return len(organizer_mod.stale_proposals(vault))
+    except Exception as e:  # noqa: BLE001 — a status read must not fail
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 if __name__ == "__main__":

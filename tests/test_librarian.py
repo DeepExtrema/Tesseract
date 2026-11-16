@@ -837,3 +837,17 @@ def test_no_held_back_line_when_nothing_skipped(vault, monkeypatch):
                         consolidator=FakeConsolidator(), embedder=FakeEmbedder(),
                         now=NOW, max_moves=2, move_limit="per-run")
     assert "held back" not in vault.read(librarian.LIBRARIAN_NOTE)
+
+
+def test_format_report_flags_stale_proposals():
+    base = {"applied": True,
+            "steps": {"index": None, "organize": _org_report(),
+                      "cache": {"rebuilt": False, "by": "none"},
+                      "consolidate": None},
+            "errors": {}}
+    flagged = dict(base, health={"stale_embeddings": 0, "pending_proposals": 2,
+                                 "stale_proposals": 1, "sweep_errors": {}})
+    clean = dict(base, health={"stale_embeddings": 0, "pending_proposals": 2,
+                               "stale_proposals": 0, "sweep_errors": {}})
+    assert "stale_proposals 1 ⚠" in librarian.format_report(flagged, NOW)
+    assert "stale_proposals 0 ✓" in librarian.format_report(clean, NOW)
