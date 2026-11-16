@@ -196,7 +196,7 @@ Installed with `python -m tesseract_mcp.skill_sync` from [`skills/`](skills/).
 ## Quickstart
 
 > Setting this up through an AI agent? Point it at [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md).
-> It asks for your vault path first and runs `--check` before every write.
+> It asks for your vault path first, shows you each change before it writes, and leaves client config edits to you.
 
 Requirements: Python 3.11+, an Obsidian vault, and the `claude` or `codex`
 CLI on `PATH` for entity extraction. Windows commands come first; the
