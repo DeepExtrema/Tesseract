@@ -35,3 +35,37 @@ def test_rank_no_match_returns_empty():
 def test_rank_respects_limit():
     corpus = {f"n{i}.md": "shared keyword appears here" for i in range(10)}
     assert len(rank(corpus, "shared", limit=3)) == 3
+
+
+FILLER = "alpha beta gamma delta epsilon zeta eta theta"
+
+
+def _score(corpus, query, path):
+    return dict(rank(corpus, query, limit=100))[path]
+
+
+def test_repeated_term_saturates():
+    # Identical length: only the term frequency differs. The contribution is
+    # bounded by idf*(k1+1), so going 5 -> 50 occurrences barely moves it.
+    def note(n):
+        return " ".join(["zephyr"] * n + FILLER.split() * 10)
+
+    def corpus(n):
+        return {"t.md": note(n), "o.md": "unrelated words only " * 10}
+
+    s1, s5, s50 = (_score(corpus(n), "zephyr", "t.md") for n in (1, 5, 50))
+    assert s1 < s5 < s50
+    assert s50 - s5 < s5 - s1
+
+
+def test_repeated_query_word_does_not_scale_with_stuffing():
+    # A note stuffed with the term must not beat a short note that mentions
+    # it once by more than the saturation bound (idf*(k1+1) = 2.5 idf).
+    corpus = {
+        "short.md": "zephyr launch notes",
+        "stuffed.md": " ".join(["zephyr"] * 60 + FILLER.split() * 5),
+        "other.md": "weather patterns today",
+        "other2.md": "another unrelated page",
+    }
+    s = dict(rank(corpus, "zephyr zephyr zephyr", limit=10))
+    assert s["short.md"] > s["stuffed.md"] / 3
