@@ -79,9 +79,10 @@ fuses them:
   `.git` (`search.SKIP_DIRS`). Every ranking pass below only ever sees this
   filtered set.
 - **BM25 ranking.** `bm25.rank` tokenizes with a simple `[a-z0-9]+` regex
-  and scores the candidates with `rank_bm25`'s `BM25L` variant (chosen over
-  the more common `BM25Okapi` because Okapi's IDF term collapses to zero
-  scores on the small corpora typical of a personal vault). The top 50
+  and scores the candidates with BM25L (k1 1.5, b 0.75, delta 0.5; chosen
+  over the more common `BM25Okapi` because Okapi's IDF term collapses to zero
+  scores on the small corpora typical of a personal vault). A term's
+  contribution levels off as it repeats in a note. The top 50
   positively-scored notes become the BM25-ranked list.
 - **Vector ranking.** Every candidate's embedding is compared to the query
   embedding by cosine similarity; the top 50 with positive similarity form

@@ -10,8 +10,8 @@ test fixtures. A term's contribution to a note that contains it is
 ``idf * (k1 + 1) * (ctd + delta) / (k1 + ctd + delta)`` with ``ctd`` the term
 frequency over the note's relative length, so it levels off as the word
 repeats; a note without the term gets nothing from it. (rank_bm25's BM25L
-multiplies by the query-term frequency and gives absent terms a positive
-score, so it was not used.)
+multiplies the term again by its frequency, so a repeated word kept growing
+the score; it is no longer used.)
 """
 
 from __future__ import annotations
