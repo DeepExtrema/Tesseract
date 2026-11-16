@@ -177,6 +177,8 @@ def related_notes(
     frontier = list(seed)
     hop = 1
     for _ in range(max(0, hops - 1)):
+        if not frontier:
+            break
         hop += 1
         nxt = []
         for ent in frontier:

@@ -1,4 +1,6 @@
+import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -146,3 +148,62 @@ def test_related_notes_rejects_negative_limit(hub, vault):
     # a negative slice would silently return all-but-N instead of a cap
     with pytest.raises(ValueError, match="limit"):
         cache.related_notes(hub, vault, "Claude/Inbox/seed.md", limit=-1)
+
+
+@pytest.fixture
+def cyclic(vault, tmp_path):
+    """Entity cycle A->B->C->A plus a tail C->D. `seed.md` mentions A; one
+    note mentions each of B, C, D. From seed: A is hop 1, B and C hop 2
+    (the cycle closes back on A), D hop 3; after that the graph is exhausted."""
+    store = GraphStore(vault)
+
+    def ent(name):
+        return {"name": name, "type": "domain", "aliases": [], "summary": ""}
+
+    def rel(a, b):
+        return {"from": a, "from_type": "domain", "rel": "links",
+                "to": b, "to_type": "domain", "evidence": ""}
+
+    # edges come from a Claude/Graph/ source, which related_notes never returns
+    store.apply("Claude/Graph/cycle-source.md", Extraction(
+        [ent("A"), ent("B"), ent("C"), ent("D")],
+        [rel("A", "B"), rel("B", "C"), rel("C", "A"), rel("C", "D")]))
+    vault.write("Claude/Inbox/seed.md", "About A.\n")
+    store.apply("Claude/Inbox/seed.md", Extraction([ent("A")], []))
+    for name in ("B", "C", "D"):
+        p = f"Projects/Note {name}.md"
+        vault.write(p, f"About {name}.\n", confirm_outside_claude=True)
+        store.apply(p, Extraction([ent(name)], []))
+    db = tmp_path / "graph.db"
+    cache.rebuild(vault, db)
+    return db
+
+
+def test_related_notes_huge_hops_terminates(cyclic):
+    import subprocess
+    import sys
+    code = (
+        "from pathlib import Path; from tesseract_mcp import cache; "
+        f"r = cache.related_notes(Path({str(cyclic)!r}), None, "
+        "'Claude/Inbox/seed.md', hops=10**12); print(len(r))"
+    )
+    # run the module under test, not whatever copy the venv has installed
+    src = str(Path(cache.__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": src}
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, timeout=10, env=env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "3"
+
+
+def test_related_notes_cycle_scores_by_hop(cyclic, vault):
+    def scores(hops):
+        got = cache.related_notes(cyclic, vault, "Claude/Inbox/seed.md", hops=hops)
+        return [r["path"] for r in got]
+
+    assert scores(1) == []  # only A is reached; no other note mentions A
+    # B and C at hop 2 tie (1/2 each), ordered by path
+    assert scores(2) == ["Projects/Note B.md", "Projects/Note C.md"]
+    # D joins at hop 3 (1/3), ranked last
+    assert scores(3) == ["Projects/Note B.md", "Projects/Note C.md", "Projects/Note D.md"]
+    assert scores(50) == scores(3)
