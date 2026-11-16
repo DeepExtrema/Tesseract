@@ -231,6 +231,16 @@ the vault's top-level folders.
   the note back and stops. Not covered: a process killed between the move
   and the append, a rollback that itself fails, and power loss (nothing is
   fsynced).
+- **Agent move budget.** MCP `organize_vault(apply=True)` passes
+  `max_moves = max(0, TESSERACT_AGENT_MOVES_PER_DAY - moves_today)` to
+  `run_sweep`, computed inside the caretaker lock. The default is 0, so agent
+  apply calls move nothing unless the variable is set; capped candidates show
+  in `skipped` as "move cap reached" and the result carries `move_budget`.
+  `moves_today` counts every journal entry whose local-date `ts` is today,
+  undone ones included, whoever made the move; no new state exists. The
+  budget is per machine (the journal is) and shared with other moves
+  journaled that day. Dry-runs are not capped; the CLI and the Librarian are
+  unaffected.
 - **Running it.** The organizer sweep is normally invoked by the Librarian
   caretaker loop (see §6); the standalone CLI
   `python -m tesseract_mcp.organize <vault> [--dry-run]` remains available

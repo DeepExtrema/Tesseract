@@ -597,3 +597,112 @@ def test_related_notes_follow_undo_without_manual_rebuild(org_vault):
     got = [r["path"] for r in cache.related_notes(
         db, org_vault, "02 - Space/NASA JPL.md")]
     assert got == [LOOSE]
+
+
+# --- agent move budget (organize_vault(apply=True)) ---------------------
+
+BUDGET_ENV = "TESSERACT_AGENT_MOVES_PER_DAY"
+
+
+@pytest.fixture
+def budget_srv(org_vault, tmp_path, monkeypatch):
+    """The server tool bound to org_vault with two movable loose notes."""
+    from tesseract_mcp import server
+
+    (org_vault.root / "Loose Cooking Note.md").write_text(
+        "recipe broth noodles note\n", encoding="utf-8")
+    monkeypatch.setenv("TESSERACT_VAULT_PATH", str(org_vault.root))
+    monkeypatch.setenv("TESSERACT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("TESSERACT_NO_TOOL_APPLY", raising=False)
+    monkeypatch.delenv(BUDGET_ENV, raising=False)
+    server._vault = None
+    server._embedder = ClusterEmbedder()
+    yield server
+    server._vault = None
+    server._embedder = None
+
+
+def _loose(vault):
+    return sorted(p.name for p in vault.root.glob("*.md")
+                  if p.name.startswith("Loose "))
+
+
+def _journal_line(ts, undone=False):
+    return json.dumps({"ts": ts, "from": "x.md", "to": "A/x.md", "share": 1.0,
+                       "neighbors": [], "rewrites": [], "undone": undone}) + "\n"
+
+
+def _seed_journal(vault, *lines):
+    jp = journal_path(vault)
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text("".join(lines), encoding="utf-8")
+
+
+def _now(days_ago=0):
+    from datetime import datetime, timedelta
+    return (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_agent_apply_default_budget_moves_nothing(org_vault, budget_srv):
+    before = _loose(org_vault)
+    result = budget_srv.organize_vault(apply=True)
+    assert result["moved"] == []
+    assert _loose(org_vault) == before
+    assert not journal_path(org_vault).read_text(encoding="utf-8")
+    assert result["move_budget"] == {
+        "per_day": 0, "used_today": 0, "remaining": 0, "setting": BUDGET_ENV}
+    assert BUDGET_ENV in result["note"]
+    assert "proposals" in result
+    assert {s["path"] for s in result["skipped"]
+            if s["reason"] == "move cap reached"} == set(before)
+
+
+def test_agent_apply_budget_one_moves_once_per_day(org_vault, budget_srv, monkeypatch):
+    monkeypatch.setenv(BUDGET_ENV, "1")
+    first = budget_srv.organize_vault(apply=True)
+    assert len(first["moved"]) == 1
+    assert first["move_budget"]["remaining"] == 1  # as computed before the sweep
+    assert len(_loose(org_vault)) == 1
+    second = budget_srv.organize_vault(apply=True)
+    assert second["moved"] == []
+    assert second["move_budget"] == {
+        "per_day": 1, "used_today": 1, "remaining": 0, "setting": BUDGET_ENV}
+    assert len(_loose(org_vault)) == 1
+    assert len(journal_path(org_vault).read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_undone_move_still_counts_against_budget(org_vault, budget_srv, monkeypatch):
+    monkeypatch.setenv(BUDGET_ENV, "1")
+    _seed_journal(org_vault, _journal_line(_now(), undone=True))
+    result = budget_srv.organize_vault(apply=True)
+    assert result["moved"] == []
+    assert result["move_budget"]["used_today"] == 1
+    assert len(_loose(org_vault)) == 2
+
+
+def test_yesterdays_and_torn_journal_lines_do_not_count(
+        org_vault, budget_srv, monkeypatch):
+    monkeypatch.setenv(BUDGET_ENV, "1")
+    _seed_journal(org_vault, _journal_line(_now(2)), '{"ts": "torn\n',
+                  _journal_line(_now(1)))
+    result = budget_srv.organize_vault(apply=True)
+    assert result["move_budget"]["used_today"] == 0
+    assert len(result["moved"]) == 1
+
+
+def test_dry_run_with_zero_budget_is_not_truncated(org_vault, budget_srv):
+    uncapped = run_sweep(org_vault, ClusterEmbedder(), apply=False)
+    preview = budget_srv.organize_vault(apply=False)
+    assert len(uncapped["moved"]) == 2
+    assert preview["moved"] == uncapped["moved"]
+    assert preview["proposals"] == uncapped["proposals"]
+    assert preview["skipped"] == uncapped["skipped"]
+
+
+@pytest.mark.parametrize("bad", ["abc", "-1", "1.5"])
+def test_invalid_budget_names_the_variable(org_vault, budget_srv, monkeypatch, bad):
+    monkeypatch.setenv(BUDGET_ENV, bad)
+    before = _loose(org_vault)
+    with pytest.raises(VaultError, match=BUDGET_ENV):
+        budget_srv.organize_vault(apply=True)
+    assert _loose(org_vault) == before

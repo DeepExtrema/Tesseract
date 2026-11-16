@@ -220,6 +220,25 @@ def _reverse_move(vault: Vault, entry: dict) -> None:
     rename_vector_cache_entry(vault, entry["to"], entry["from"])
 
 
+def moves_today(vault: Vault) -> int:
+    """Journaled moves dated today (local time), undone ones included."""
+    jp = journal_path(vault)
+    if not jp.exists():
+        return 0
+    today = datetime.now().strftime("%Y-%m-%d")
+    count = 0
+    for line in jp.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # torn line, skipped as undo_move does
+        if isinstance(entry, dict) and str(entry.get("ts", "")).startswith(today):
+            count += 1
+    return count
+
+
 def undo_move(vault: Vault, note_rel: str) -> dict:
     jp = journal_path(vault)
     entries = []
