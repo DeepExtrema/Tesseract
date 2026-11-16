@@ -10,11 +10,12 @@ threshold, hard exclusions below.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import cache, indexer
+from . import cache, indexer, platforms
 from . import embeddings as embeddings_mod
 from . import sheets
 from .embeddings import cosine
@@ -27,7 +28,7 @@ from .mover import (
     reverse_rewrites,
 )
 from .search import parse_frontmatter
-from .vault import Vault, VaultError, write_text_atomic
+from .vault import Vault, VaultError, _write_all, write_text_atomic
 
 EXCLUDED_DIRS = frozenset({
     "Claude", "00 - Maps of Content", ".obsidian", ".smart-env",
