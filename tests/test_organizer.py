@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 
 import pytest
 
@@ -305,3 +307,62 @@ def test_move_that_would_edit_a_sheet_row_becomes_a_proposal(org_vault, apply):
     assert prop and prop[0]["reason"].startswith("linked from sheet rows")
     assert (org_vault.root / "Loose Space Note.md").is_file()
     assert row.read_bytes() == before
+
+
+def test_server_undo_refused_while_sweep_holds_caretaker_lock(
+        org_vault, tmp_path, monkeypatch):
+    """A tool-level undo must not interleave with a running apply sweep."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    from tesseract_mcp import organizer as organizer_mod
+    from tesseract_mcp import server
+    from tesseract_mcp.locking import caretaker_lock
+
+    monkeypatch.setenv("TESSERACT_VAULT_PATH", str(org_vault.root))
+    monkeypatch.setenv("TESSERACT_STATE_DIR", str(tmp_path / "state"))
+    server._vault = None
+    record = move_note(org_vault, "02 - Space/SmallSat.md",
+                       "02 - Space/SmallSat Renamed.md")
+    record_move(org_vault, record, share=0.9, neighbors=[])
+
+    in_sweep, release = threading.Event(), threading.Event()
+    real_move = organizer_mod.move_note
+
+    def paused_move(*args, **kwargs):
+        in_sweep.set()
+        assert release.wait(10)
+        return real_move(*args, **kwargs)
+
+    monkeypatch.setattr(organizer_mod, "move_note", paused_move)
+    errors = []
+
+    def sweep():
+        try:
+            with caretaker_lock(indexer.state_dir(org_vault.root)):
+                run_sweep(org_vault, ClusterEmbedder(), apply=True)
+        except Exception as e:  # surfaced below
+            errors.append(e)
+
+    t = threading.Thread(target=sweep)
+    t.start()
+    try:
+        assert in_sweep.wait(10)
+        snap = lambda: (
+            sorted(p.relative_to(org_vault.root).as_posix()
+                   for p in org_vault.root.rglob("*") if p.is_file()),
+            journal_path(org_vault).read_bytes(),
+            json.dumps(indexer.load_manifest(org_vault.root), sort_keys=True),
+        )
+        before = snap()
+        with pytest.raises(ToolError, match="another caretaker"):
+            asyncio.run(server.mcp.call_tool(
+                "undo_move", {"path": "02 - Space/SmallSat Renamed.md"}))
+        assert snap() == before
+    finally:
+        release.set()
+        t.join(15)
+    assert not errors, errors
+
+    result = server.undo_move("02 - Space/SmallSat Renamed.md")
+    assert result["restored"] == "02 - Space/SmallSat.md"
+    server._vault = None
