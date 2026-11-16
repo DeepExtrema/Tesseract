@@ -1,4 +1,7 @@
 import asyncio
+import os
+from pathlib import Path
+
 import json
 import threading
 
@@ -366,3 +369,51 @@ def test_server_undo_refused_while_sweep_holds_caretaker_lock(
     result = server.undo_move("02 - Space/SmallSat Renamed.md")
     assert result["restored"] == "02 - Space/SmallSat.md"
     server._vault = None
+
+
+def _journal_state(org_vault):
+    jp = journal_path(org_vault)
+    return jp.read_bytes(), sorted(p.name for p in jp.parent.iterdir())
+
+
+def test_undo_failed_journal_write_keeps_journal(org_vault, moved, monkeypatch):
+    before = _journal_state(org_vault)
+    real = Path.write_text
+
+    def broken(self, data, *a, **kw):
+        real(self, data[: len(data) // 2], *a, **kw)
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "write_text", broken)
+        with pytest.raises(OSError):
+            undo_move(org_vault, "02 - Space/Loose Space Note.md")
+    assert _journal_state(org_vault) == before
+    entries = [json.loads(l) for l in before[0].decode().splitlines()]
+    assert entries[-1]["to"] == "02 - Space/Loose Space Note.md"
+    assert not entries[-1].get("undone")
+
+
+def test_undo_failed_journal_replace_keeps_journal(org_vault, moved, monkeypatch):
+    before = _journal_state(org_vault)
+    jp = journal_path(org_vault)
+    real_replace = os.replace
+
+    def locked(src, dst):
+        if Path(dst) == jp:
+            raise PermissionError("sharing violation")
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as mp:
+        mp.setattr("os.replace", locked)
+        mp.setattr("time.sleep", lambda s: None)
+        with pytest.raises(PermissionError):
+            undo_move(org_vault, "02 - Space/Loose Space Note.md")
+    assert _journal_state(org_vault) == before
+
+
+def test_undo_success_marks_entry_undone_without_temp(org_vault, moved):
+    undo_move(org_vault, "02 - Space/Loose Space Note.md")
+    data, names = _journal_state(org_vault)
+    assert json.loads(data.decode().splitlines()[-1])["undone"] is True
+    assert not [n for n in names if n.endswith(".tmp-write")]

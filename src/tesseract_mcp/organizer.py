@@ -27,7 +27,7 @@ from .mover import (
     reverse_rewrites,
 )
 from .search import parse_frontmatter
-from .vault import Vault, VaultError
+from .vault import Vault, VaultError, write_text_atomic
 
 EXCLUDED_DIRS = frozenset({
     "Claude", "00 - Maps of Content", ".obsidian", ".smart-env",
@@ -200,9 +200,7 @@ def undo_move(vault: Vault, note_rel: str) -> dict:
     )
     indexer.rename_manifest_entry(vault.root, entry["to"], entry["from"])
     entries[target_idx]["undone"] = True
-    jp.write_text(
-        "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8"
-    )
+    write_text_atomic(jp, "".join(json.dumps(e) + "\n" for e in entries))
     _ensure_note(vault)
     vault.append(
         ORGANIZER_NOTE,
