@@ -112,6 +112,8 @@ def merge_aliases(vault: Vault, rel: str, candidates: list[str]) -> bool:
     end = text.find("\n---", 3) if text.startswith("---") else -1
     if end == -1:
         return False
+    if not meta and text[3:end].strip():
+        return False  # unparseable YAML: rewriting would drop its keys
     meta["aliases"] = current + added
     fm = "---\n" + yaml.safe_dump(meta, sort_keys=False, default_flow_style=None) + "---"
     vault.write(rel, fm + text[end + 4:], overwrite=True)

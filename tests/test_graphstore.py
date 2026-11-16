@@ -211,3 +211,11 @@ def test_merge_aliases_frontmatter_note_with_rule_in_body(vault):
     assert parse_frontmatter(text)["aliases"] == ["Rustlang"]
     for line in BODY_WITH_RULE.splitlines():
         assert line in text.splitlines()
+
+
+def test_merge_aliases_unparseable_frontmatter_is_left_alone(vault):
+    rel = "Claude/Graph/Domains/Rust.md"
+    original = "---\nkeep: [unclosed\nother: 1\n---\n\nBody.\n"
+    vault.write(rel, original)
+    assert merge_aliases(vault, rel, ["Rustlang"]) is False
+    assert vault.read(rel) == original
