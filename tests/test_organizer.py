@@ -446,6 +446,8 @@ def test_sweep_journal_append_failure_leaves_no_unjournaled_move(
     assert indexer.load_manifest(org_vault.root) == manifest_before
     jp = journal_path(org_vault)
     assert not jp.exists() or jp.read_text(encoding="utf-8").strip() == ""
+    cache = _fallback_cache(org_vault)  # rollback moved the vector key back too
+    assert cache and all((org_vault.root / rel).is_file() for rel in cache)
 
 
 def test_sweep_unwritable_journal_moves_nothing(org_vault):

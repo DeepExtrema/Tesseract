@@ -154,8 +154,9 @@ def _open_journal(vault: Vault) -> int:
 
 
 def _append_journal(vault: Vault, entry: dict) -> None:
-    """One raw write per entry; a failed write is truncated away so a torn
-    line can never poison undo's line-by-line parse."""
+    """One raw write per entry. A failed write is truncated away (best
+    effort) so a torn line does not poison undo's line-by-line parse; a
+    failed truncate or a process killed mid-write can still leave one."""
     fd = _open_journal(vault)
     try:
         size = os.fstat(fd).st_size
@@ -186,7 +187,9 @@ def record_move(
     try:
         _append_journal(vault, entry)
     except BaseException:
-        # an unjournaled move can never be undone: put everything back
+        # an unjournaled move can never be undone: put everything back.
+        # Not covered: a kill between move_note and this append, or a
+        # rollback that itself fails, leaves the move unjournaled.
         _reverse_move(vault, entry)
         raise
     _ensure_note(vault)
