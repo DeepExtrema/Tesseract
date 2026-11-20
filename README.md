@@ -197,6 +197,9 @@ Installed with `python -m tesseract_mcp.skill_sync` from [`skills/`](skills/).
 
 ## Quickstart
 
+> Setting this up through an AI agent? Point it at [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md).
+> It asks for your vault path first, shows you each change before it writes, and leaves client config edits to you.
+
 Requirements: Python 3.11+, an Obsidian vault, and the `claude` or `codex`
 CLI on `PATH` for entity extraction. Windows commands come first; the
 [macOS / Linux](#macos--linux) steps follow.
@@ -420,7 +423,7 @@ tests/               pytest suite
 - Keep markdown authoritative: anything the server derives must be rebuildable from the vault.
 - Never import numpy, torch or sentence-transformers lazily inside a tool body. Warm them at startup (`server._warm_start()`); see the appendix in [ARCHITECTURE.md](docs/ARCHITECTURE.md). Verify with `python scripts/probe_server.py`.
 - Eval thresholds live in `tests/test_evals.py`. If the baseline drops below a floor, fix the fixture or golden set; never lower the floor.
-- Agents: run sync tools with `--check` and against throwaway vaults only; live syncs need the owner's consent (see [AGENTS.md](AGENTS.md)).
+- Agents: vault provisioning needs an explicit yes per step per vault; `mcp_sync`, `skill_sync` and `hook_sync --install` write client config, so agents run `--check` only and the user runs the live command. Trial runs use throwaway vaults (see [AGENTS.md](AGENTS.md)).
 
 ### Opt-in hardening
 
