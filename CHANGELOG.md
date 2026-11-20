@@ -4,7 +4,7 @@
 
 ### Highlights
 
-- **Search is about 13 times faster.** The server keeps an index of the vault in memory and re-reads only the notes that changed. Before, it read and tokenized every note on each query. On a 4,050-note vault, a warm `search_brain` call over MCP takes a median of 37 ms, down from 474 ms. The first search after a start takes about 0.7 s longer, because the server builds the index then.
+- **Search is faster.** The server keeps an index of the vault in memory and re-reads only the notes that changed. Before, it read and tokenized every note on each query. The first search after a start takes about 0.7 s longer, because the server builds the index then.
 - **Search puts the right note first more often.** The server now adds the keyword score and the vector score of each note, where it used to merge two ranked lists. A word repeated many times in a note no longer outranks the note that is about the topic. An entity note counts half as much as the notes it was extracted from. On the maintainer's vault, the right note came first for 85% of 300 held-out questions, up from 38%, and was in the top five for 97%, up from 76%. A model wrote and labelled those questions, and no person has audited them.
 - **A failed move no longer leaves a note without an undo record.** The organizer checks the undo journal before it moves anything, and puts a move back if the journal write fails. `undo_move` is refused while a sweep is running. The index manifest and the journal are written to a temporary file and swapped in.
 - **`consolidate_graph` no longer deletes note text.** Merging aliases into an entity note that had a horizontal rule but no frontmatter used to delete everything above the rule.
@@ -30,7 +30,6 @@
 - Keyword and vector scores are scaled to 0-1 over the candidates and added with equal weight, replacing rank fusion.
 - `find_entity` takes a `limit` and returns the best matches first: exact, then prefix, then substring, then most mentions.
 - Search answers from an in-process note index that re-reads only changed notes, scores with numpy BM25L, and keeps fallback vectors in `note_vectors.npz`; the `rank-bm25` dependency is removed.
-- On a 4,050-note vault, a warm search over MCP stdio takes a median of 37 ms, down from 474 ms (184 searches per round, 3 rounds, no errors or empty results).
 - The read-only stale-vector check no longer converts the old JSON vector store.
 - Added `scripts/bench_mcp.py`, `scripts/bench_workload.py` and `scripts/search_snapshot.py` for measuring search latency and comparing results between two checkouts.
 - `python -m tesseract_mcp.evals` also reports success@1, a 95% interval for each success rate and for MRR, and success per `kind` when the golden file gives one.
