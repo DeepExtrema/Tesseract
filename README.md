@@ -455,7 +455,9 @@ instance and its own `TESSERACT_AGENT_NAME`; nothing needs a central coordinator
 - **Every note an agent writes says who wrote it.** `agent:` frontmatter, sheet rows
   and concept-update headings carry the agent's name, so `query_notes` and Obsidian
   can filter by contributor. Caretaker output (graph entities, merge stubs, Librarian
-  notes, the `Tasks.md` seed) stays attributed to `claude`.
+  notes, the `Tasks.md` seed) stays attributed to `claude`. New session notes and
+  concepts can also carry `origin:`, the conversation that wrote them, when the agent
+  passes it to `log_session` or `upsert_concept`; it is context, never authority.
 - **Caretaker work stays serialized.** Indexing, organizing and consolidation still take
   the single caretaker lock, so autonomous agents cannot step on a sweep.
 - **The write contract still applies.** Agents write freely under `Claude/`; anything

@@ -300,12 +300,19 @@ def read_note(path: str) -> str:
 
 @_write_tool
 def log_session(
-    title: str, content: str, project: str, tags: list[str] | None = None
+    title: str,
+    content: str,
+    project: str,
+    tags: list[str] | None = None,
+    origin: str | None = None,
 ) -> str:
     """Log a work session to Claude/Sessions/ and update Claude/Index.md.
-    Use at the end of significant work: what we did, learned, decided."""
+    Use at the end of significant work: what we did, learned, decided.
+    origin: optional opaque string naming the conversation (in T3 the thread
+    link t3-thread://v2/<env>/<threadId>, elsewhere <harness>:<session id>);
+    stored in frontmatter, never interpreted by the server."""
     return notes.log_session(
-        get_vault(), title, content, project=project, tags=tags or []
+        get_vault(), title, content, project=project, tags=tags or [], origin=origin
     )
 
 
@@ -316,9 +323,11 @@ def capture(content: str) -> str:
 
 
 @_write_tool
-def upsert_concept(name: str, content: str) -> str:
-    """Create or extend an evergreen concept note in Claude/Concepts/."""
-    return notes.upsert_concept(get_vault(), name, content)
+def upsert_concept(name: str, content: str, origin: str | None = None) -> str:
+    """Create or extend an evergreen concept note in Claude/Concepts/.
+    origin: optional opaque conversation string (see log_session); stamped on
+    new concepts only, never added to or changed on an existing one."""
+    return notes.upsert_concept(get_vault(), name, content, origin=origin)
 
 
 @_write_tool

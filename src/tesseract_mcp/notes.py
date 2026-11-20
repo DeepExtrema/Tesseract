@@ -38,6 +38,7 @@ def make_frontmatter(
     tags: list[str] | None = None,
     agent: str | None = None,
     created: datetime | None = None,
+    origin: str | None = None,
 ) -> str:
     created = created or datetime.now()
     meta = {
@@ -46,6 +47,8 @@ def make_frontmatter(
         "project": project,
         "tags": tags or [],
     }
+    if origin and origin.strip():
+        meta["origin"] = origin
     return "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n\n"
 
 
@@ -56,6 +59,7 @@ def log_session(
     project: str,
     tags: list[str],
     now: datetime | None = None,
+    origin: str | None = None,
 ) -> str:
     now = now or datetime.now()
     base = f"{now:%Y-%m-%d} {safe_filename(title)}"
@@ -68,7 +72,9 @@ def log_session(
             # the earlier note being overwritten.
             vault.write(
                 rel,
-                make_frontmatter(project=project, tags=tags, created=now)
+                make_frontmatter(
+                    project=project, tags=tags, created=now, origin=origin
+                )
                 + content
                 + "\n",
             )
@@ -98,7 +104,11 @@ def _find_concept(vault: Vault, filename: str) -> str | None:
 
 
 def upsert_concept(
-    vault: Vault, name: str, content: str, now: datetime | None = None
+    vault: Vault,
+    name: str,
+    content: str,
+    now: datetime | None = None,
+    origin: str | None = None,
 ) -> str:
     now = now or datetime.now()
     filename = f"{safe_filename(name)}.md"
@@ -108,7 +118,7 @@ def upsert_concept(
         try:
             vault.write(
                 rel,
-                make_frontmatter(tags=["concept"], created=now)
+                make_frontmatter(tags=["concept"], created=now, origin=origin)
                 + f"# {name}\n\n{content}\n",
             )
             return rel
