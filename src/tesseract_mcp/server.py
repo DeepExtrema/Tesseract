@@ -49,6 +49,23 @@ def _write_tool(fn):
 NO_TOOL_APPLY_ENV = "TESSERACT_NO_TOOL_APPLY"
 
 
+AGENT_MOVES_ENV = "TESSERACT_AGENT_MOVES_PER_DAY"
+
+
+def _agent_moves_per_day() -> int:
+    raw = os.environ.get(AGENT_MOVES_ENV, "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise VaultError(
+            f"{AGENT_MOVES_ENV} must be an integer >= 0, got {raw!r}")
+    return value
+
+
 def _caretaker():
     """Serialize with the Librarian sweep and the caretaker CLIs."""
     return caretaker_lock(indexer.state_dir(get_vault().root))
@@ -162,15 +179,46 @@ def context_bundle(query: str, hops: int = 2, limit: int = 10) -> dict:
 @_write_tool
 def organize_vault(apply: bool = False) -> dict:
     """Neighbor-vote sweep of the vault's topical folders. Dry-run by
-    default: returns {moved, proposals, skipped} without touching files.
-    apply=True executes moves (journaled to Claude/Organizer.md; reversible
-    via undo_move). The scheduled CLI sweep is the autonomous path — see
-    constitution → Organizer."""
+    default: returns {moved, proposals, skipped} without touching files,
+    listing every candidate. apply=True executes moves (journaled to
+    Claude/Organizer.md; reversible via undo_move) but only within a per-day
+    budget, TESSERACT_AGENT_MOVES_PER_DAY, default 0: unless the human sets
+    it, agent apply calls move nothing. The budget is counted from this
+    machine's undo journal, includes undone moves, and is shared with every
+    other move journaled today (the scheduled Librarian and CLI are not
+    limited by it). Apply results carry `move_budget`. Proposals live in one
+    managed block in Claude/Organizer.md (states pending, needs-resolution,
+    dismissed); each proposal in the result carries `state`, `proposed` and
+    `age_days`. An apply call writes the note only when that block's text
+    changes, so one that moves nothing and proposes nothing new writes nothing.
+    Dry-runs read the block and write nothing. Needs-resolution items are 30+
+    days old: tell the owner, never tick a box yourself without their say-so.
+    The scheduled CLI sweep is the autonomous path — see constitution →
+    Organizer."""
     if apply:
         _refuse_tool_apply("organize_vault(apply=True)",
                            "python -m tesseract_mcp.organize <vault>")
+        per_day = _agent_moves_per_day()
         with _caretaker():
-            return organizer_mod.run_sweep(get_vault(), _get_embedder(), apply=True)
+            vault = get_vault()
+            used = organizer_mod.moves_today(vault)
+            remaining = max(0, per_day - used)
+            result = organizer_mod.run_sweep(
+                vault, _get_embedder(), apply=True, max_moves=remaining)
+        result["move_budget"] = {
+            "per_day": per_day, "used_today": used, "remaining": remaining,
+            "setting": AGENT_MOVES_ENV,
+        }
+        if per_day == 0:
+            result["note"] = (
+                "Agent moves are off (the default); nothing moved. The human "
+                f"turns them on with {AGENT_MOVES_ENV}.")
+        elif remaining == 0:
+            result["note"] = (
+                f"Today's move budget is used ({used} journaled moves, budget "
+                f"{per_day}); nothing moved. The human raises it with "
+                f"{AGENT_MOVES_ENV}.")
+        return result
     return organizer_mod.run_sweep(get_vault(), _get_embedder(), apply=apply)
 
 

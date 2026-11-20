@@ -237,6 +237,29 @@ the vault's top-level folders.
   note that's already filed inside a taxonomy folder is left exactly where
   it is — a low-confidence disagreement about an already-filed note is
   silently skipped rather than surfaced as a proposal.
+- **Proposal lifecycle.** Every open proposal lives in one managed block in
+  `Claude/Organizer.md`, between `<!-- tesseract:proposals:start -->` and
+  `<!-- tesseract:proposals:end -->`, as three checkbox lists: Needs
+  resolution, Pending, Dismissed. Identity is (path, suggested folder); each
+  line carries share, reason, `proposed` date and, once stale, `stale since`.
+  Each applying sweep (under the caretaker lock, writing only when the block
+  or log text changes) applies four transitions: a ticked line becomes
+  dismissed and is never proposed again while the note stays at that path
+  (reported in `skipped` as `proposal dismissed`); a stored pair no longer
+  proposed leaves as applied (note now in the suggested folder) or withdrawn,
+  with one `## Log` line; a pending pair still proposed after
+  `PROPOSAL_STALE_DAYS` (30) whole days becomes needs-resolution with one log
+  line and its `proposed` date kept; a new pair is added as pending. Needs
+  resolution never expires; it leaves only as applied, dismissed or
+  withdrawn. A dry-run reads the block and writes nothing. Reports carry
+  `state`, `proposed`, `age_days` per proposal; `stale_proposals` appears in
+  Librarian health, `librarian_status` and the digest's `proposals` section,
+  all read from the synced block so any machine sees the same items.
+  Older `### Proposals {date}` sections stay untouched. A stored pair whose
+  move a cap holds back stays in the block. A box ticked while a sweep runs
+  is kept (the block is re-read after the moves). Text a human adds inside
+  the block is dropped on the next rewrite. Not covered: a cap on open
+  proposals.
 - **Safe moves.** Applying a move is delegated to `mover.py`, which rewrites
   every path-qualified `[[wikilink]]` that pointed at the note's old
   location (bare `[[Stem]]` links are untouched, since the organizer refuses
@@ -252,6 +275,18 @@ the vault's top-level folders.
   the note back and stops. Not covered: a process killed between the move
   and the append, a rollback that itself fails, and power loss (nothing is
   fsynced).
+- **Agent move budget.** MCP `organize_vault(apply=True)` passes
+  `max_moves = max(0, TESSERACT_AGENT_MOVES_PER_DAY - moves_today)` to
+  `run_sweep`, computed inside the caretaker lock. The default is 0, so agent
+  apply calls move nothing unless the variable is set; capped candidates show
+  in `skipped` as "move cap reached" and the result carries `move_budget`.
+  `moves_today` counts every journal entry whose local-date `ts` is today,
+  undone ones included, whoever made the move; no new state exists. The
+  budget is per machine (the journal is) and shared with other moves
+  journaled that day. Dry-runs are not capped; the CLI is unaffected. The Librarian has its
+  own limits (§6) and does not use this budget. An apply call that moves nothing writes nothing to
+  `Claude/Organizer.md` unless the proposals block text changes (see
+  "Proposal lifecycle").
 - **Running it.** The organizer sweep is normally invoked by the Librarian
   caretaker loop (see §6); the standalone CLI
   `python -m tesseract_mcp.organize <vault> [--dry-run]` remains available
@@ -273,6 +308,14 @@ sequence and records what happened.
   records an error, leaves that step's slot as `None`, and lets later steps
   continue. The CLI exits non-zero when any step failed, so a scheduler can
   alert on a bad run.
+- **Move limits.** The sweep files at most `--max-moves` notes per run
+  (default 10) and `--max-moves-per-day` per day (default 20); both accept
+  `unlimited`. This changed the default from unlimited. The organizer gets
+  `min(per-run, max(0, per-day - organizer.moves_today))`, so the day count
+  includes undone moves and moves by any maker. Dry-runs use the same
+  limit. Candidates skipped with "move cap reached" are counted in the
+  report and `Claude/Librarian.md`, naming the binding limit and the flag
+  that raises it. Shipped schedules pass no flags and get the defaults.
 - **Index drain.** The index step loops `indexer.run` until nothing remains
   (bounded at 40 rounds), so a single sweep can drain a backlog of
   changed notes without a separate indexer schedule.
