@@ -49,6 +49,23 @@ def _write_tool(fn):
 NO_TOOL_APPLY_ENV = "TESSERACT_NO_TOOL_APPLY"
 
 
+AGENT_MOVES_ENV = "TESSERACT_AGENT_MOVES_PER_DAY"
+
+
+def _agent_moves_per_day() -> int:
+    raw = os.environ.get(AGENT_MOVES_ENV, "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise VaultError(
+            f"{AGENT_MOVES_ENV} must be an integer >= 0, got {raw!r}")
+    return value
+
+
 def _caretaker():
     """Serialize with the Librarian sweep and the caretaker CLIs."""
     return caretaker_lock(indexer.state_dir(get_vault().root))
@@ -162,15 +179,48 @@ def context_bundle(query: str, hops: int = 2, limit: int = 10) -> dict:
 @_write_tool
 def organize_vault(apply: bool = False) -> dict:
     """Neighbor-vote sweep of the vault's topical folders. Dry-run by
-    default: returns {moved, proposals, skipped} without touching files.
-    apply=True executes moves (journaled to Claude/Organizer.md; reversible
-    via undo_move). The scheduled CLI sweep is the autonomous path — see
-    constitution → Organizer."""
+    default: returns {moved, proposals, skipped} without touching files,
+    listing every candidate. apply=True executes moves (journaled to
+    Claude/Organizer.md; reversible via undo_move) but only within a per-day
+    budget, TESSERACT_AGENT_MOVES_PER_DAY, default 0: unless the human sets
+    it, agent apply calls move nothing. The budget is counted from this
+    machine's undo journal, includes undone moves, and is shared with every
+    other move journaled today (the scheduled Librarian and CLI are not
+    limited by it). Apply results carry `move_budget`, whose `used_today` and
+    `remaining` are as of the end of the call. Proposals live in one
+    managed block in Claude/Organizer.md (states pending, needs-resolution,
+    dismissed); each proposal in the result carries `state`, `proposed` and
+    `age_days`. An apply call writes the note only when that block's text
+    changes, so one that moves nothing and proposes nothing new writes nothing.
+    Dry-runs read the block and write nothing. Needs-resolution items are 30+
+    days old: tell the owner, never tick a box yourself without their say-so.
+    The scheduled CLI sweep is the autonomous path — see constitution →
+    Organizer."""
     if apply:
         _refuse_tool_apply("organize_vault(apply=True)",
                            "python -m tesseract_mcp.organize <vault>")
+        per_day = _agent_moves_per_day()
         with _caretaker():
-            return organizer_mod.run_sweep(get_vault(), _get_embedder(), apply=True)
+            vault = get_vault()
+            used = organizer_mod.moves_today(vault)
+            allowed = max(0, per_day - used)
+            result = organizer_mod.run_sweep(
+                vault, _get_embedder(), apply=True, max_moves=allowed)
+        made = len(result["moved"])
+        result["move_budget"] = {
+            "per_day": per_day, "used_today": used + made,
+            "remaining": allowed - made, "setting": AGENT_MOVES_ENV,
+        }
+        if per_day == 0:
+            result["note"] = (
+                "Agent moves are off (the default); nothing moved. The human "
+                f"turns them on with {AGENT_MOVES_ENV}.")
+        elif allowed == 0:
+            result["note"] = (
+                f"Today's move budget is used ({used} journaled moves, budget "
+                f"{per_day}); nothing moved. The human raises it with "
+                f"{AGENT_MOVES_ENV}.")
+        return result
     return organizer_mod.run_sweep(get_vault(), _get_embedder(), apply=apply)
 
 
@@ -178,7 +228,8 @@ def organize_vault(apply: bool = False) -> dict:
 def librarian_status() -> dict:
     """Last Librarian caretaker sweep: per-step results, health checks
     (stale embeddings, manifest drift, orphaned entities, cache consistency),
-    and pending proposal counts. Read-only — the sweep itself runs on a
+    pending proposal counts, and `stale_proposals` (filing proposals
+    unanswered for 30 days or more). Read-only — the sweep itself runs on a
     schedule via `python -m tesseract_mcp.librarian`."""
     return librarian_mod.status(get_vault())
 
@@ -252,12 +303,19 @@ def read_note(path: str) -> str:
 
 @_write_tool
 def log_session(
-    title: str, content: str, project: str, tags: list[str] | None = None
+    title: str,
+    content: str,
+    project: str,
+    tags: list[str] | None = None,
+    origin: str | None = None,
 ) -> str:
     """Log a work session to Claude/Sessions/ and update Claude/Index.md.
-    Use at the end of significant work: what we did, learned, decided."""
+    Use at the end of significant work: what we did, learned, decided.
+    origin: optional opaque string naming the conversation (in T3 the thread
+    link t3-thread://v2/<env>/<threadId>, elsewhere <harness>:<session id>);
+    stored in frontmatter, never interpreted by the server."""
     return notes.log_session(
-        get_vault(), title, content, project=project, tags=tags or []
+        get_vault(), title, content, project=project, tags=tags or [], origin=origin
     )
 
 
@@ -268,9 +326,11 @@ def capture(content: str) -> str:
 
 
 @_write_tool
-def upsert_concept(name: str, content: str) -> str:
-    """Create or extend an evergreen concept note in Claude/Concepts/."""
-    return notes.upsert_concept(get_vault(), name, content)
+def upsert_concept(name: str, content: str, origin: str | None = None) -> str:
+    """Create or extend an evergreen concept note in Claude/Concepts/.
+    origin: optional opaque conversation string (see log_session); stamped on
+    new concepts only, never added to or changed on an existing one."""
+    return notes.upsert_concept(get_vault(), name, content, origin=origin)
 
 
 @_write_tool

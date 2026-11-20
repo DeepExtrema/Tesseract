@@ -16,6 +16,9 @@ TASKS_SEED = (
     "## Open\n\n"
 )
 _TASK_LINE = re.compile(r"^\s*[-*] \[(?P<state>[ xX])\] (?P<text>.+)$")
+# Checkbox lines inside a server-managed block (the organizer's proposals)
+# are that block's own state, not tasks.
+_MANAGED_BLOCK = re.compile(r"^<!-- tesseract:[a-z-]+:(start|end) -->$")
 
 
 def add_task(vault: Vault, content: str, due: str | None = None) -> str:
@@ -40,9 +43,14 @@ def list_tasks(
     found: list[dict] = []
     for path, rel in iter_note_files(vault, folder):
         text = path.read_text(encoding="utf-8", errors="ignore")
+        managed = False
         for line in text.splitlines():
+            marker = _MANAGED_BLOCK.match(line)
+            if marker:
+                managed = marker.group(1) == "start"
+                continue
             m = _TASK_LINE.match(line)
-            if not m:
+            if managed or not m:
                 continue
             done = m.group("state") in "xX"
             if done and not include_done:

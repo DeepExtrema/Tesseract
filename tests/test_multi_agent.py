@@ -105,10 +105,11 @@ def test_concept_collision_extends_the_note_even_when_lookup_misses(vault, monke
     # lookup cannot see the file. Extend it; never recurse or overwrite.
     vault.write("Claude/Concepts/Idea.md", "# Idea\n\noriginal\n")
     monkeypatch.setattr(notes, "_find_concept", lambda *a: None)
-    rel = notes.upsert_concept(vault, "Idea", "addition")
+    rel = notes.upsert_concept(vault, "Idea", "addition", origin="race:1")
     text = vault.read(rel)
     assert rel == "Claude/Concepts/Idea.md"
     assert "original" in text and "addition" in text
+    assert "race:1" not in text  # only a create stamps origin
 
 
 def test_concurrent_appends_keep_every_line(vault):

@@ -39,6 +39,19 @@ def test_list_tasks_finds_open_everywhere(vault):
     assert "done task" not in texts
 
 
+def test_list_tasks_skips_managed_blocks(vault):
+    vault.write("Claude/Organizer.md", (
+        "# Organizer\n\n- [ ] a real task\n"
+        "<!-- tesseract:proposals:start -->\n#### Pending\n"
+        "- [ ] `A.md` → **02 - Space** (share 0.6; low confidence; proposed 2026-01-01)\n"
+        "#### Dismissed\n"
+        "- [x] `B.md` → **02 - Space** (share 0.6; low confidence; proposed 2026-01-01)\n"
+        "<!-- tesseract:proposals:end -->\n- [ ] another real task\n"))
+    got = tasks.list_tasks(vault, include_done=True, folder="Claude")
+    assert [t["text"] for t in got if t["path"] == "Claude/Organizer.md"] == [
+        "a real task", "another real task"]
+
+
 def test_list_tasks_include_done(vault):
     vault.write("Claude/Inbox/todo.md", "- [ ] open\n- [x] closed\n")
     got = tasks.list_tasks(vault, include_done=True)

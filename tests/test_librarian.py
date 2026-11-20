@@ -700,7 +700,7 @@ def test_cleanup_auto_repair_env_opt_in(vault, vault_dir, monkeypatch):
 def test_cli_auto_cleanup_flag_passes_through(vault_dir, monkeypatch):
     seen = {}
 
-    def fake_sweep(vault, apply, max_moves, auto_cleanup):
+    def fake_sweep(vault, apply, max_moves, auto_cleanup, move_limit=None):
         seen["auto_cleanup"] = auto_cleanup
         return {"steps": {}, "health": {}, "errors": {}, "applied": apply}
 
@@ -723,7 +723,7 @@ def test_cli_first_apply_sweep_needs_confirmation(vault_dir, monkeypatch):
 def test_cli_first_apply_sweep_runs_when_confirmed(vault_dir, monkeypatch):
     seen = {}
 
-    def fake_sweep(vault, apply, max_moves, auto_cleanup):
+    def fake_sweep(vault, apply, max_moves, auto_cleanup, move_limit=None):
         seen["apply"] = apply
         return {"steps": {}, "health": {}, "errors": {}, "applied": apply}
 
@@ -738,7 +738,7 @@ def test_cli_later_apply_sweeps_need_no_flag(vault, vault_dir, monkeypatch):
     librarian.save_state(vault, librarian.load_state(vault))  # a sweep has run
     seen = {}
 
-    def fake_sweep(vault, apply, max_moves, auto_cleanup):
+    def fake_sweep(vault, apply, max_moves, auto_cleanup, move_limit=None):
         seen["apply"] = apply
         return {"steps": {}, "health": {}, "errors": {}, "applied": apply}
 
@@ -746,3 +746,108 @@ def test_cli_later_apply_sweeps_need_no_flag(vault, vault_dir, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["librarian", str(vault_dir)])
     librarian.main()
     assert seen["apply"] is True
+
+
+# --- move limits -----------------------------------------------------------
+
+def _journal_today(vault, n):
+    from tesseract_mcp.organizer import journal_path
+
+    ts = datetime.now().strftime("%Y-%m-%d 01:00:00")
+    line = json.dumps({"ts": ts, "from": "x.md", "to": "A/x.md", "share": 1.0,
+                       "neighbors": [], "rewrites": [], "undone": False}) + "\n"
+    jp = journal_path(vault)
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text(line * n, encoding="utf-8")
+
+
+def _capture_max_moves(vault_dir, monkeypatch, *flags):
+    seen = {}
+
+    def fake(v, emb, apply, max_moves=None):
+        seen["max_moves"] = max_moves
+        return _org_report()
+
+    monkeypatch.setattr(librarian.organizer_mod, "run_sweep", fake)
+    monkeypatch.setattr(librarian, "_drain_index", lambda v, e: _counts())
+    monkeypatch.setattr(sys, "argv", ["librarian", str(vault_dir), "--dry-run", *flags])
+    librarian.main()
+    return seen["max_moves"]
+
+
+def test_default_run_caps_moves_at_ten(vault_dir, monkeypatch):
+    assert _capture_max_moves(vault_dir, monkeypatch) == 10
+
+
+def test_per_day_allowance_shrinks_run_cap(vault_dir, monkeypatch):
+    _journal_today(Vault(vault_dir), 15)
+    assert _capture_max_moves(vault_dir, monkeypatch) == 5
+
+
+def test_per_day_exhausted_gives_zero(vault_dir, monkeypatch):
+    _journal_today(Vault(vault_dir), 25)
+    assert _capture_max_moves(vault_dir, monkeypatch) == 0
+
+
+def test_unlimited_on_both_is_no_cap(vault_dir, monkeypatch):
+    _journal_today(Vault(vault_dir), 50)
+    assert _capture_max_moves(
+        vault_dir, monkeypatch,
+        "--max-moves", "unlimited", "--max-moves-per-day", "unlimited") is None
+
+
+@pytest.mark.parametrize("flag", ["--max-moves", "--max-moves-per-day"])
+@pytest.mark.parametrize("bad", ["-1", "abc"])
+def test_invalid_limit_is_parser_error(vault_dir, monkeypatch, flag, bad):
+    monkeypatch.setattr(sys, "argv", ["librarian", str(vault_dir), "--dry-run", flag, bad])
+    with pytest.raises(SystemExit) as exc:
+        librarian.main()
+    assert exc.value.code == 2
+
+
+def test_resolve_names_binding_limit(vault):
+    _journal_today(vault, 15)
+    assert librarian.resolve_move_limit(vault, 10, 20) == (5, "per-day")
+    assert librarian.resolve_move_limit(vault, 3, 20) == (3, "per-run")
+    assert librarian.resolve_move_limit(vault, None, None) == (None, None)
+
+
+@pytest.mark.parametrize("limit,flag", [("per-run", "--max-moves"),
+                                        ("per-day", "--max-moves-per-day")])
+def test_held_back_reported_in_report_and_note(vault, monkeypatch, limit, flag):
+    held = [{"path": f"n{i}.md", "reason": "move cap reached"} for i in range(3)]
+    monkeypatch.setattr(librarian.organizer_mod, "run_sweep",
+                        lambda v, e, apply, max_moves=None: _org_report(skipped=held))
+    monkeypatch.setattr(librarian, "_drain_index", lambda v, e: _counts())
+    result = librarian.run_sweep(vault, extractor=FakeExtractor(),
+                                 consolidator=FakeConsolidator(),
+                                 embedder=FakeEmbedder(), now=NOW,
+                                 max_moves=2, move_limit=limit)
+    assert result["move_limit"]["held_back"] == 3
+    text = vault.read(librarian.LIBRARIAN_NOTE)
+    assert f"3 candidate moves held back by the {limit} limit" in text
+    assert f"`{flag} N`" in text
+
+
+def test_no_held_back_line_when_nothing_skipped(vault, monkeypatch):
+    monkeypatch.setattr(librarian.organizer_mod, "run_sweep",
+                        lambda v, e, apply, max_moves=None: _org_report())
+    monkeypatch.setattr(librarian, "_drain_index", lambda v, e: _counts())
+    librarian.run_sweep(vault, extractor=FakeExtractor(),
+                        consolidator=FakeConsolidator(), embedder=FakeEmbedder(),
+                        now=NOW, max_moves=2, move_limit="per-run")
+    assert "held back" not in vault.read(librarian.LIBRARIAN_NOTE)
+
+
+def test_format_report_flags_stale_proposals():
+    base = {"applied": True,
+            "steps": {"index": None, "organize": _org_report(),
+                      "cache": {"rebuilt": False, "by": "none"},
+                      "consolidate": None},
+            "errors": {}}
+    flagged = dict(base, health={"stale_embeddings": 0, "pending_proposals": 2,
+                                 "stale_proposals": 1, "sweep_errors": {}})
+    clean = dict(base, health={"stale_embeddings": 0, "pending_proposals": 2,
+                               "stale_proposals": 0, "sweep_errors": {}})
+    assert "stale_proposals 1 ⚠" in librarian.format_report(flagged, NOW)
+    assert "stale_proposals 0 ✓" in librarian.format_report(clean, NOW)

@@ -68,7 +68,7 @@ Rules for every AI agent writing to this vault. Read this before writing.
 
 ## Note format
 
-- YAML frontmatter on every agent note: `created`, `agent`, `project`, `tags`.
+- YAML frontmatter on every agent note: `created`, `agent`, `project`, `tags`; optionally `origin`, naming the conversation that wrote it (`write_note` callers add it by hand); it is context, not authority.
 - Use `[[wikilinks]]` to connect related notes — an unlinked note is a lost
   memory.
 - Write for the reader who has no session context: full sentences, no
@@ -106,4 +106,9 @@ neighbors live (K=10 cosine vote, share ≥ 0.7). It NEVER touches Claude/,
 duplicate filename stem it proposes instead of moving. Every move is
 journaled to Claude/Organizer.md and reversible via the undo_move tool.
 Low-confidence classifications queue as proposals in the same note —
-resolving them teaches future votes.
+resolving them teaches future votes. Only the owner dismisses a proposal, by
+ticking its box in the Organizer proposals block; an agent may tick one only
+when the owner told it to in that session, or when the owner's own recorded
+words settle that exact proposal (an owner-attributed Claude/Decisions.md line
+or a constitution rule), and it must say what it relied on. Dismissal covers
+that path and folder only; never write `organize: false` into owner notes.

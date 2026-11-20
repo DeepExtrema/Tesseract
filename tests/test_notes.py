@@ -106,3 +106,55 @@ def test_make_frontmatter_yaml_roundtrip_with_special_chars():
     meta = yaml.safe_load(block)
     assert meta["project"] == "esg: incident [pipeline]"
     assert meta["tags"] == ['odd"tag', "b:c"]
+
+
+ORIGIN = "t3-thread://v2/env/thread:abc"
+
+
+def _fm(text):
+    from tesseract_mcp.search import parse_frontmatter
+
+    return parse_frontmatter(text)
+
+
+def test_log_session_stamps_origin_exactly(vault):
+    rel = notes.log_session(
+        vault, "O", "body", project="p", tags=[], now=NOW, origin=ORIGIN
+    )
+    assert _fm(vault.read(rel))["origin"] == ORIGIN
+
+
+def test_log_session_without_origin_has_no_key(vault):
+    rel = notes.log_session(vault, "N", "body", project="p", tags=[], now=NOW)
+    text = vault.read(rel)
+    assert "origin" not in _fm(text)
+    assert text.startswith(notes.make_frontmatter(project="p", created=NOW))
+
+
+def test_upsert_concept_new_is_stamped(vault):
+    rel = notes.upsert_concept(vault, "Fresh", "x", now=NOW, origin=ORIGIN)
+    assert _fm(vault.read(rel))["origin"] == ORIGIN
+
+
+def test_upsert_concept_existing_keeps_frontmatter(vault):
+    rel = notes.upsert_concept(vault, "Old", "x", now=NOW)
+    before = vault.read(rel).split("---\n")[1]
+    notes.upsert_concept(vault, "Old", "y", now=NOW, origin="other:1")
+    text = vault.read(rel)
+    assert text.split("---\n")[1] == before
+    assert "origin" not in _fm(text)
+    assert "other:1" not in text
+
+
+def test_upsert_concept_update_keeps_existing_origin(vault):
+    rel = notes.upsert_concept(vault, "Kept", "x", now=NOW, origin="first:1")
+    notes.upsert_concept(vault, "Kept", "y", now=NOW, origin="second:2")
+    text = vault.read(rel)
+    assert _fm(text)["origin"] == "first:1"
+    assert "second:2" not in text
+
+
+def test_blank_origin_is_omitted(vault):
+    rel = notes.log_session(vault, "Blank", "body", project="p", tags=[],
+                            now=NOW, origin="  ")
+    assert "origin" not in _fm(vault.read(rel))
