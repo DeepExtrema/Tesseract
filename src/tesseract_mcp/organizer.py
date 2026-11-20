@@ -52,8 +52,9 @@ PROPOSAL_STALE_DAYS = 30
 _BLOCK_START = "<!-- tesseract:proposals:start -->"
 _BLOCK_END = "<!-- tesseract:proposals:end -->"
 _BLOCK_HINT = (
-    "_Maintained by the sweep. Tick a box to dismiss that proposal "
-    "(this path to this folder only)._"
+    "_Maintained by the sweep. Mark a box (any mark) to dismiss that proposal "
+    "(this path to this folder only). To undo a dismissal, delete its line. "
+    "Other text typed inside this block is not kept._"
 )
 _SECTIONS = (
     ("needs-resolution", "Needs resolution"),
@@ -61,7 +62,7 @@ _SECTIONS = (
     ("dismissed", "Dismissed"),
 )
 _LINE_RE = re.compile(
-    r"^- \[([ xX])\] `(.+?)` → \*\*(.+?)\*\* "
+    r"^- \[(.)\] `(.+?)` → \*\*(.+?)\*\* "
     r"\(share ([0-9.]+); (.*); proposed (\d{4}-\d{2}-\d{2})"
     r"(?:; stale since (\d{4}-\d{2}-\d{2}))?\)(?:\s.*)?$"  # Tasks may append " ✅ date"
 )
@@ -324,8 +325,9 @@ def render_proposal_block(entries: list[dict]) -> str:
 
 
 def parse_proposal_block(block: str) -> list[dict]:
-    """Entries of a managed block. `ticked` marks an owner's tick on a line
-    that is not yet dismissed; unrecognised lines are ignored."""
+    """Entries of a managed block. `ticked` marks any owner's mark ([x], [-],
+    ...) on a line that is not yet dismissed. A checkbox line that cannot be
+    read is an error: dropping it would lose a dismissal or reset its date."""
     entries: list[dict] = []
     state = None
     titles = {title: s for s, title in _SECTIONS}
@@ -334,7 +336,13 @@ def parse_proposal_block(block: str) -> list[dict]:
             state = titles.get(line[5:].strip())
             continue
         m = _LINE_RE.match(line)
-        if state is None or not m:
+        if not m:
+            if state is not None and line.startswith("- ["):
+                raise VaultError(
+                    f"{ORGANIZER_NOTE}: cannot read proposal line {line!r}; "
+                    "fix it by hand or delete the line")
+            continue
+        if state is None:
             continue
         box, path, suggested, share, reason, proposed, stale = m.groups()
         for d in (proposed, stale):
@@ -360,12 +368,12 @@ def _read_proposals(vault: Vault) -> tuple[str | None, list[dict]]:
         text = vault.read(ORGANIZER_NOTE)
     except VaultError:
         return None, []
-    start = text.find(_BLOCK_START)
-    end = text.find(_BLOCK_END, start + 1) if start >= 0 else -1
-    if (start >= 0) != (end >= 0) or text.count(_BLOCK_START) > 1:
+    starts, ends = text.count(_BLOCK_START), text.count(_BLOCK_END)
+    start, end = text.find(_BLOCK_START), text.find(_BLOCK_END)
+    if starts != ends or starts > 1 or end < start:
         raise VaultError(
             f"{ORGANIZER_NOTE}: proposals block markers are damaged; fix by hand")
-    if start < 0:
+    if not starts:
         return text, []
     return text, parse_proposal_block(text[start:end + len(_BLOCK_END)])
 
@@ -471,6 +479,8 @@ def run_sweep(
     writes nothing. `today` is injectable for tests."""
     today = today or date.today()
     _, stored = _read_proposals(vault)
+    dismissed_before = {(e["path"], e["suggested"]) for e in stored
+                        if e["state"] == "dismissed" or e["ticked"]}
     if apply:  # fail before any move if the journal cannot be opened
         os.close(_open_journal(vault))
     if embedder is None:
@@ -492,6 +502,11 @@ def run_sweep(
             continue
         if current == cls.folder:
             skipped.append({"path": rel, "reason": "already correctly filed"})
+            continue
+        if (rel, cls.folder) in dismissed_before:
+            # the owner said no to this folder: never move there, however
+            # confident the vote later becomes
+            skipped.append({"path": rel, "reason": "proposal dismissed"})
             continue
         if cls.share < VOTE_THRESHOLD:
             if current is None:  # root notes queue for a human; filed notes rest

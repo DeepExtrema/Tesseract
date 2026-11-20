@@ -48,7 +48,7 @@ def make_frontmatter(
         "tags": tags or [],
     }
     if origin and origin.strip():
-        meta["origin"] = origin
+        meta["origin"] = origin.strip()
     return "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n\n"
 
 

@@ -406,7 +406,7 @@ def format_report(result: dict, now: datetime) -> str:
         if ml:
             lines.append(
                 f"- organize: {ml['held_back']} candidate moves held back by "
-                f"the {ml['limit']} limit ({ml['max_moves']}); raise it with "
+                f"the {ml['limit']} limit ({ml['max_moves']} allowed this run); raise it with "
                 f"`{ml['flag']} N` or `{ml['flag']} unlimited`\n")
 
     cch = steps.get("cache")

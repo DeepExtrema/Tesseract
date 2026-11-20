@@ -186,7 +186,8 @@ def organize_vault(apply: bool = False) -> dict:
     it, agent apply calls move nothing. The budget is counted from this
     machine's undo journal, includes undone moves, and is shared with every
     other move journaled today (the scheduled Librarian and CLI are not
-    limited by it). Apply results carry `move_budget`. Proposals live in one
+    limited by it). Apply results carry `move_budget`, whose `used_today` and
+    `remaining` are as of the end of the call. Proposals live in one
     managed block in Claude/Organizer.md (states pending, needs-resolution,
     dismissed); each proposal in the result carries `state`, `proposed` and
     `age_days`. An apply call writes the note only when that block's text
@@ -202,18 +203,19 @@ def organize_vault(apply: bool = False) -> dict:
         with _caretaker():
             vault = get_vault()
             used = organizer_mod.moves_today(vault)
-            remaining = max(0, per_day - used)
+            allowed = max(0, per_day - used)
             result = organizer_mod.run_sweep(
-                vault, _get_embedder(), apply=True, max_moves=remaining)
+                vault, _get_embedder(), apply=True, max_moves=allowed)
+        made = len(result["moved"])
         result["move_budget"] = {
-            "per_day": per_day, "used_today": used, "remaining": remaining,
-            "setting": AGENT_MOVES_ENV,
+            "per_day": per_day, "used_today": used + made,
+            "remaining": allowed - made, "setting": AGENT_MOVES_ENV,
         }
         if per_day == 0:
             result["note"] = (
                 "Agent moves are off (the default); nothing moved. The human "
                 f"turns them on with {AGENT_MOVES_ENV}.")
-        elif remaining == 0:
+        elif allowed == 0:
             result["note"] = (
                 f"Today's move budget is used ({used} journaled moves, budget "
                 f"{per_day}); nothing moved. The human raises it with "
@@ -226,7 +228,8 @@ def organize_vault(apply: bool = False) -> dict:
 def librarian_status() -> dict:
     """Last Librarian caretaker sweep: per-step results, health checks
     (stale embeddings, manifest drift, orphaned entities, cache consistency),
-    and pending proposal counts. Read-only — the sweep itself runs on a
+    pending proposal counts, and `stale_proposals` (filing proposals
+    unanswered for 30 days or more). Read-only — the sweep itself runs on a
     schedule via `python -m tesseract_mcp.librarian`."""
     return librarian_mod.status(get_vault())
 

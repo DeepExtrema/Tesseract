@@ -691,7 +691,8 @@ def test_agent_apply_budget_one_moves_once_per_day(org_vault, budget_srv, monkey
     monkeypatch.setenv(BUDGET_ENV, "1")
     first = budget_srv.organize_vault(apply=True)
     assert len(first["moved"]) == 1
-    assert first["move_budget"]["remaining"] == 1  # as computed before the sweep
+    assert first["move_budget"] == {
+        "per_day": 1, "used_today": 1, "remaining": 0, "setting": BUDGET_ENV}
     assert len(_loose(org_vault)) == 1
     second = budget_srv.organize_vault(apply=True)
     assert second["moved"] == []
@@ -716,15 +717,16 @@ def test_yesterdays_and_torn_journal_lines_do_not_count(
     _seed_journal(org_vault, _journal_line(_now(2)), '{"ts": "torn\n',
                   _journal_line(_now(1)))
     result = budget_srv.organize_vault(apply=True)
-    assert result["move_budget"]["used_today"] == 0
-    assert len(result["moved"]) == 1
+    assert len(result["moved"]) == 1  # the budget of 1 was still whole
+    assert result["move_budget"]["used_today"] == 1  # only this call's move
 
 
 def test_budget_subtracts_moves_already_made_today(org_vault, budget_srv, monkeypatch):
     monkeypatch.setenv(BUDGET_ENV, "2")
     _seed_journal(org_vault, _journal_line(_now()))
     result = budget_srv.organize_vault(apply=True)
-    assert result["move_budget"]["remaining"] == 1
+    assert result["move_budget"]["used_today"] == 2
+    assert result["move_budget"]["remaining"] == 0
     assert len(result["moved"]) == 1
     assert len(_loose(org_vault)) == 1
 
@@ -838,7 +840,7 @@ def test_proposal_listed_once_and_second_sweep_writes_nothing(prop_vault):
         "pending", "2026-01-01", 1)
 
 
-@pytest.mark.parametrize("tick", ["- [x]", "- [X]", "- [x]+✅"])
+@pytest.mark.parametrize("tick", ["- [x]", "- [X]", "- [x]+✅", "- [-]"])
 def test_ticked_line_is_dismissed_and_never_reproposed(prop_vault, tick):
     _sweep(prop_vault, 0)
     note = prop_vault.read(ORGANIZER_NOTE)
@@ -859,6 +861,24 @@ def test_ticked_line_is_dismissed_and_never_reproposed(prop_vault, tick):
         assert FUSION not in [p["path"] for p in later["proposals"]]
         assert {"path": FUSION, "reason": "proposal dismissed"} in later["skipped"]
     assert {"path": FUSION, "reason": "proposal dismissed"} in report["skipped"]
+
+
+def test_dismissed_pair_is_not_moved_when_the_vote_turns_confident(prop_vault):
+    _sweep(prop_vault, 0)
+    note = prop_vault.read(ORGANIZER_NOTE)
+    prop_vault.write(ORGANIZER_NOTE, note.replace(
+        f"- [ ] `{FUSION}`", f"- [x] `{FUSION}`"), overwrite=True)
+    # the note now votes for the folder the owner turned down
+    (prop_vault.root / FUSION).write_text("space orbital telemetry note\n",
+                                          encoding="utf-8")
+    for day in (1, 2):
+        report = _sweep(prop_vault, day)
+        assert FUSION not in [m["from"] for m in report["moved"]]
+        assert {"path": FUSION, "reason": "proposal dismissed"} in report["skipped"]
+    assert (prop_vault.root / FUSION).is_file()
+    text = prop_vault.read(ORGANIZER_NOTE)
+    assert len(_section(text, "Dismissed")) == 1
+    assert "proposal applied" not in text
 
 
 def test_capped_move_keeps_its_stored_proposal(prop_vault):
@@ -893,12 +913,16 @@ def test_box_ticked_during_a_sweep_is_kept(prop_vault, monkeypatch):
     assert _section(text, "Pending") == []
 
 
-@pytest.mark.parametrize("damage", ["bad-date", "lost-end-marker"])
+@pytest.mark.parametrize(
+    "damage", ["bad-date", "lost-end-marker", "lost-start-marker", "unreadable-line"])
 def test_damaged_block_fails_before_any_move(prop_vault, damage):
     line = (f"- [ ] `{FUSION}` → **02 - Space** (share 0.6; low confidence; "
             f"proposed {'2026-02-30' if damage == 'bad-date' else '2026-01-01'})")
+    if damage == "unreadable-line":
+        line = f"- [ ] {FUSION} to 02 - Space, maybe"
+    start = "" if damage == "lost-start-marker" else BLOCK_START
     end = "" if damage == "lost-end-marker" else "<!-- tesseract:proposals:end -->\n"
-    prop_vault.write(ORGANIZER_NOTE, "# Organizer\n\n" + BLOCK_START
+    prop_vault.write(ORGANIZER_NOTE, "# Organizer\n\n" + start
                      + "\n#### Pending\n" + line + "\n" + end, overwrite=True)
     before = _snapshot(prop_vault)
     with pytest.raises(VaultError):

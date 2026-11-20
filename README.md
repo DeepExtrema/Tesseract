@@ -348,7 +348,7 @@ These run outside the MCP server and are never exposed as tools.
 
 ### Scheduled maintenance
 
-The shipped schedules (`scripts/librarian-task.cmd`, the launchd plist template, `scripts/index-nightly.sh`) pass no move flags, so they get the new defaults: at most 10 organizer moves per run and 20 per day. Held-back candidates are counted in the run report and `Claude/Librarian.md` and re-evaluated next sweep; edit the schedule to add `--max-moves` / `--max-moves-per-day` (`N` or `unlimited`) to change that.
+The shipped Librarian schedules (`scripts/librarian-task.cmd` and the Librarian launchd plist template) pass no move flags, so they get the new defaults: at most 10 organizer moves per run and 20 per day. Held-back candidates are counted in the run report and `Claude/Librarian.md` and re-evaluated next sweep; edit the schedule to add `--max-moves` / `--max-moves-per-day` (`N` or `unlimited`) to change that.
 
 > **First Librarian run on a real vault: use `--dry-run`** and review the
 > report before scheduling unattended runs. Dry-run writes no state, moves,
