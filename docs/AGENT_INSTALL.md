@@ -1,6 +1,6 @@
 # Installing Tesseract for a user (agent procedure)
 
-Read this when asked to set Tesseract up for someone. Code changes follow README "Contributing". Procedure adapted from Enigma's `AGENTS.md`.
+Read this when asked to set Tesseract up for someone. Code changes follow README "Contributing".
 
 ## Consent rule (split by risk)
 

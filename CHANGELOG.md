@@ -23,6 +23,11 @@
 - The index manifest and the undo journal are written to a temporary file and swapped in.
 - A moved or restored note keeps its stored vector under its new path, and `undo_move` rebuilds `graph.db`.
 - The README has a "Provenance and reuse" section.
+- **Default changed:** `organize_vault(apply=True)` from an agent moves nothing unless `TESSERACT_AGENT_MOVES_PER_DAY` is set. The budget is counted from this machine's undo journal; a dry-run still lists every candidate.
+- **Default changed:** the Librarian moves at most 10 notes per run and 20 per day (`--max-moves`, `--max-moves-per-day`; both accept `unlimited`). The report says how many moves a limit held back.
+- Filing proposals live in one managed block in `Claude/Organizer.md` in place of a new section per sweep. Ticking a line dismisses it; a proposal unanswered for 30 days moves to "Needs resolution" and is reported by `organize_vault`, `librarian_status` and the digest.
+- `log_session` and `upsert_concept` take an optional `origin`, stored in the frontmatter of new session notes and new concepts and never interpreted by the server.
+- Added `docs/AGENT_INSTALL.md`, a procedure for an agent installing Tesseract for a user: vault writes after a yes per step, client configuration changes run by the user.
 
 ## 0.1.0
 

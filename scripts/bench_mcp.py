@@ -1,4 +1,4 @@
-"""Latency benchmark for a stdio MCP memory server (Tesseract or Enigma).
+"""Latency benchmark for a stdio MCP memory server.
 
 Drives the real server over stdio, so every number includes JSON-RPC,
 argument validation and serialisation -- what an agent actually waits on.
